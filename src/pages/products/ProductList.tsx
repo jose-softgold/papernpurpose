@@ -1,0 +1,296 @@
+import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
+import { storage } from '../../firebase/config'
+import { productService } from '../../services/products'
+import { inventoryService } from '../../services/inventory'
+import { Product, ProductVersion } from '../../types'
+import LoadingSpinner from '../../components/LoadingSpinner'
+import EmptyState from '../../components/EmptyState'
+import { useToast } from '../../hooks/useToast'
+import ToastContainer from '../../components/ToastContainer'
+import { formatCurrency } from '../../utils/format'
+import { exportToCSV } from '../../utils/export'
+
+interface ProductRow extends Product {
+  activeVersion: ProductVersion | null
+  stock: number
+}
+
+interface AddProductForm {
+  name: string
+  category: string
+  description: string
+  defaultSellingPrice: string
+}
+
+interface AddVersionForm {
+  version: string
+  description: string
+}
+
+const emptyProductForm: AddProductForm = { name: '', category: '', description: '', defaultSellingPrice: '' }
+const emptyVersionForm: AddVersionForm = { version: 'V1', description: '' }
+
+export default function ProductList() {
+  const [rows, setRows] = useState<ProductRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showAddProduct, setShowAddProduct] = useState(false)
+  const [showAddVersion, setShowAddVersion] = useState(false)
+  const [newProductId, setNewProductId] = useState<string | null>(null)
+  const [productForm, setProductForm] = useState<AddProductForm>(emptyProductForm)
+  const [versionForm, setVersionForm] = useState<AddVersionForm>(emptyVersionForm)
+  const [saving, setSaving] = useState(false)
+  const [selectedPhotos, setSelectedPhotos] = useState<File[]>([])
+  const fileRef = useRef<HTMLInputElement>(null)
+  const { toasts, showToast } = useToast()
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const [products, stocks] = await Promise.all([
+        productService.getAll(),
+        inventoryService.getProductStocks(),
+      ])
+      // fetch active versions in parallel
+      const activeVersions = await Promise.all(products.map(p => productService.getActiveVersion(p.id)))
+      setRows(products.map((p, i) => ({
+        ...p,
+        activeVersion: activeVersions[i],
+        stock: stocks[p.id] ?? 0,
+      })))
+    } catch {
+      showToast('Failed to load products', 'danger')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [])
+
+  const setProductField = (field: keyof AddProductForm) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setProductForm(f => ({ ...f, [field]: e.target.value }))
+
+  const setVersionField = (field: keyof AddVersionForm) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+      setVersionForm(f => ({ ...f, [field]: e.target.value }))
+
+  const handleCreateProduct = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      const id = await productService.create({
+        name: productForm.name.trim(),
+        category: productForm.category.trim(),
+        description: productForm.description.trim(),
+        defaultSellingPrice: parseFloat(productForm.defaultSellingPrice) || 0,
+        status: 'active',
+        imageUrl: '',
+      })
+      if (selectedPhotos.length) {
+        const urls = await Promise.all(selectedPhotos.map(async file => {
+          const storageRef = ref(storage, `products/${id}/${Date.now()}-${file.name}`)
+          await uploadBytes(storageRef, file)
+          return getDownloadURL(storageRef)
+        }))
+        await productService.update(id, { photoUrls: urls })
+      }
+      setNewProductId(id)
+      setShowAddProduct(false)
+      setShowAddVersion(true)
+    } catch {
+      showToast('Failed to create product', 'danger')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleCreateVersion = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newProductId) return
+    setSaving(true)
+    try {
+      await productService.createVersion({
+        productId: newProductId,
+        version: versionForm.version.trim(),
+        description: versionForm.description.trim(),
+        status: 'active',
+      })
+      showToast('Product and version created')
+      setShowAddVersion(false)
+      setProductForm(emptyProductForm)
+      setVersionForm(emptyVersionForm)
+      setNewProductId(null)
+      await load()
+    } catch {
+      showToast('Failed to create version', 'danger')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSkipVersion = async () => {
+    showToast('Product created (no version yet)')
+    setShowAddVersion(false)
+    setProductForm(emptyProductForm)
+    setVersionForm(emptyVersionForm)
+    setNewProductId(null)
+    await load()
+  }
+
+  const handleExport = () => {
+    const data = rows.map(r => ({
+      Name: r.name,
+      Category: r.category,
+      'Current Version': r.activeVersion?.version ?? '—',
+      Stock: r.stock,
+      'Default Price (₹)': r.defaultSellingPrice,
+      Status: r.status,
+    }))
+    exportToCSV(data as unknown as Record<string, unknown>[], 'products')
+  }
+
+  if (loading) return <LoadingSpinner />
+
+  return (
+    <div className="container-fluid py-3">
+      <ToastContainer toasts={toasts} />
+
+      <div className="d-flex justify-content-between align-items-center mb-3">
+        <h4 className="mb-0">Products</h4>
+        <div className="d-flex gap-2">
+          <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>
+          <button className="btn btn-primary btn-sm" onClick={() => setShowAddProduct(true)}>+ Add Product</button>
+        </div>
+      </div>
+
+      {rows.length === 0 ? (
+        <EmptyState message="No products yet. Add your first product." />
+      ) : (
+        <div className="card">
+          <div className="table-responsive">
+            <table className="table table-hover mb-0">
+              <thead className="table-light">
+                <tr>
+                  <th>Product</th>
+                  <th>Category</th>
+                  <th>Current Version</th>
+                  <th>Stock</th>
+                  <th>Default Price</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(r => (
+                  <tr key={r.id}>
+                    <td>
+                      <Link to={`/products/${r.id}`} className="text-decoration-none fw-semibold">{r.name}</Link>
+                    </td>
+                    <td>{r.category || '—'}</td>
+                    <td>{r.activeVersion?.version ?? <span className="text-muted">None</span>}</td>
+                    <td>{r.stock}</td>
+                    <td>{formatCurrency(r.defaultSellingPrice)}</td>
+                    <td>
+                      <span className={`badge bg-${r.status === 'active' ? 'success' : 'secondary'}`}>
+                        {r.status}
+                      </span>
+                    </td>
+                    <td>
+                      <Link to={`/products/${r.id}`} className="btn btn-outline-primary btn-sm">View</Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Add Product Modal */}
+      {showAddProduct && (
+        <>
+          <div className="modal-backdrop fade show" />
+          <div className="modal d-block" tabIndex={-1}>
+            <div className="modal-dialog">
+              <div className="modal-content">
+                <form onSubmit={handleCreateProduct}>
+                  <div className="modal-header">
+                    <h5 className="modal-title">Add Product</h5>
+                    <button type="button" className="btn-close" onClick={() => setShowAddProduct(false)} />
+                  </div>
+                  <div className="modal-body">
+                    <div className="mb-3">
+                      <label className="form-label">Name <span className="text-danger">*</span></label>
+                      <input className="form-control" value={productForm.name} onChange={setProductField('name')} required />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Category</label>
+                      <input className="form-control" value={productForm.category} onChange={setProductField('category')} />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Description</label>
+                      <textarea className="form-control" rows={2} value={productForm.description} onChange={setProductField('description')} />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Default Selling Price (₹)</label>
+                      <input className="form-control" type="number" min="0" step="0.01" value={productForm.defaultSellingPrice} onChange={setProductField('defaultSellingPrice')} />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Photos</label>
+                      <input ref={fileRef} type="file" accept="image/*" multiple className="form-control"
+                        onChange={e => setSelectedPhotos(e.target.files ? Array.from(e.target.files) : [])} />
+                      {selectedPhotos.length > 0 && (
+                        <div className="d-flex flex-wrap gap-1 mt-2">
+                          {selectedPhotos.map(f => <span key={f.name} className="badge bg-secondary">{f.name}</span>)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-secondary" onClick={() => setShowAddProduct(false)} disabled={saving}>Cancel</button>
+                    <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Next: Add Version'}</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Add First Version Modal */}
+      {showAddVersion && (
+        <>
+          <div className="modal-backdrop fade show" />
+          <div className="modal d-block" tabIndex={-1}>
+            <div className="modal-dialog">
+              <div className="modal-content">
+                <form onSubmit={handleCreateVersion}>
+                  <div className="modal-header">
+                    <h5 className="modal-title">Add First Version</h5>
+                  </div>
+                  <div className="modal-body">
+                    <p className="text-muted small">Add an initial version for this product (e.g. V1). You can add more versions later.</p>
+                    <div className="mb-3">
+                      <label className="form-label">Version Label <span className="text-danger">*</span></label>
+                      <input className="form-control" value={versionForm.version} onChange={setVersionField('version')} required />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Description</label>
+                      <textarea className="form-control" rows={2} value={versionForm.description} onChange={setVersionField('description')} />
+                    </div>
+                  </div>
+                  <div className="modal-footer">
+                    <button type="button" className="btn btn-secondary" onClick={handleSkipVersion} disabled={saving}>Skip for Now</button>
+                    <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving…' : 'Create Version'}</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
