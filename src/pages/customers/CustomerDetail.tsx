@@ -36,7 +36,7 @@ export default function CustomerDetail() {
   const [form, setForm] = useState({
     type: 'individual' as 'individual' | 'company',
     name: '', companyName: '', contactPerson: '',
-    phone: '', email: '', address: '', city: '', notes: '', mapLink: '',
+    phone: '', email: '', address: '', city: '', notes: '', mapLink: '', gstin: '',
   })
   const { toasts, showToast } = useToast()
 
@@ -62,6 +62,7 @@ export default function CustomerDetail() {
             city: c.city,
             notes: c.notes,
             mapLink: c.mapLink ?? '',
+            gstin: c.gstin ?? '',
           })
         }
         setOrders(customerOrders)
@@ -95,7 +96,7 @@ export default function CustomerDetail() {
         contactPerson: form.contactPerson,
         phone: form.phone, email: form.email,
         address: form.address, city: form.city,
-        notes: form.notes, mapLink: form.mapLink,
+        notes: form.notes, mapLink: form.mapLink, gstin: form.gstin,
       }
     }
     return {
@@ -104,7 +105,7 @@ export default function CustomerDetail() {
       companyName: '', contactPerson: '',
       phone: form.phone, email: form.email,
       address: form.address, city: form.city,
-      notes: form.notes, mapLink: form.mapLink,
+      notes: form.notes, mapLink: form.mapLink, gstin: form.gstin,
     }
   }
 
@@ -167,7 +168,7 @@ export default function CustomerDetail() {
 
   if (loading) return <LoadingSpinner />
   if (!customer) return (
-    <div className="container-fluid py-3">
+    <div>
       <p className="text-danger">Customer not found.</p>
       <button className="btn btn-secondary" onClick={() => navigate('/customers')}>Back</button>
     </div>
@@ -176,20 +177,20 @@ export default function CustomerDetail() {
   const isCompany = customer.type === 'company'
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
-      <div className="d-flex align-items-center gap-3 mb-4">
+      <div className="d-flex align-items-center gap-3 mb-4 flex-wrap">
         <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/customers')}>
           &larr; Back
         </button>
         <div>
-          <h4 className="mb-0">{displayName(customer)}</h4>
+          <h4 className="pc-page-title">{displayName(customer)}</h4>
           {isCompany && customer.contactPerson && (
             <small className="text-muted">Contact: {customer.contactPerson}</small>
           )}
         </div>
-        <span className={`badge bg-${isCompany ? 'info text-dark' : 'secondary'}`}>
+        <span className={`badge bg-${isCompany ? 'info' : 'secondary'}`}>
           {isCompany ? 'Company' : 'Individual'}
         </span>
         <span className={`badge bg-${customer.status === 'active' ? 'success' : 'secondary'}`}>
@@ -265,6 +266,10 @@ export default function CustomerDetail() {
                   <input className="form-control" value={form.address} onChange={set('address')} />
                 </div>
                 <div className="col-12">
+                  <label className="form-label">GSTIN</label>
+                  <input className="form-control" value={form.gstin} onChange={set('gstin')} />
+                </div>
+                <div className="col-12">
                   <label className="form-label">Google Maps Link</label>
                   <input className="form-control" placeholder="Paste a Google Maps URL or lat,lng" value={form.mapLink} onChange={set('mapLink')} />
                 </div>
@@ -307,6 +312,10 @@ export default function CustomerDetail() {
               <div className="col-md-6">
                 <small className="text-muted d-block">City</small>
                 <span>{customer.city || '—'}</span>
+              </div>
+              <div className="col-md-6">
+                <small className="text-muted d-block">GSTIN</small>
+                <span>{customer.gstin || '—'}</span>
               </div>
               <div className="col-md-6">
                 <small className="text-muted d-block">Member Since</small>

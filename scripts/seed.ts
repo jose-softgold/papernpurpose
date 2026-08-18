@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase-admin/app'
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore'
 import { getAuth } from 'firebase-admin/auth'
 
-process.env.FIRESTORE_EMULATOR_HOST = 'localhost:8080'
+process.env.FIRESTORE_EMULATOR_HOST = 'localhost:8180'
 process.env.FIREBASE_AUTH_EMULATOR_HOST = 'localhost:9099'
 
 initializeApp({ projectId: 'demo-project' })
@@ -12,10 +12,38 @@ const authAdmin = getAuth()
 async function seed() {
   console.log('Seeding database...')
 
-  // Create test user
+  // Create test user + owner profile
   try {
-    await authAdmin.createUser({ email: 'admin@craftbiz.local', password: 'password123', displayName: 'Admin' })
-  } catch (e) { console.log('User already exists') }
+    let uid: string
+    try {
+      const user = await authAdmin.createUser({
+        email: 'admin@craftbiz.local',
+        password: 'password123',
+        displayName: 'Admin',
+      })
+      uid = user.uid
+    } catch {
+      const existing = await authAdmin.getUserByEmail('admin@craftbiz.local')
+      uid = existing.uid
+    }
+    await db.collection('users').doc(uid).set(
+      {
+        email: 'admin@craftbiz.local',
+        name: 'Admin',
+        role: 'owner',
+        active: true,
+        createdAt: FieldValue.serverTimestamp(),
+        createdBy: uid,
+      },
+      { merge: true },
+    )
+    await db.collection('meta').doc('bootstrap').set(
+      { claimedBy: uid, claimedAt: FieldValue.serverTimestamp() },
+      { merge: true },
+    )
+  } catch (e) {
+    console.log('User seed skipped', e)
+  }
 
   // Suppliers
   const supplier1Id = await db.collection('suppliers').add({
@@ -46,6 +74,7 @@ async function seed() {
   const roseId      = await db.collection('products').add({ name: 'Large Paper Rose', category: 'Paper Craft', description: 'Handmade large paper rose decoration', defaultSellingPrice: 250, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
   const bannerId    = await db.collection('products').add({ name: 'Birthday Banner', category: 'Banner', description: 'Custom birthday banner with glitter', defaultSellingPrice: 180, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
   const butterflyId = await db.collection('products').add({ name: 'Paper Butterfly', category: 'Paper Craft', description: 'Delicate paper butterfly for decoration', defaultSellingPrice: 120, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
+  const partyHatId  = await db.collection('products').add({ name: 'Party Hat', category: 'Paper Craft', description: 'Colorful paper party hat', defaultSellingPrice: 80, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
 
   // Product Versions
   await db.collection('productVersions').add({ productId: roseId, version: 'V1', description: 'Original design', status: 'inactive', createdAt: ts(), updatedAt: ts() })
@@ -53,6 +82,7 @@ async function seed() {
   const roseV3      = await db.collection('productVersions').add({ productId: roseId, version: 'V3', description: 'Premium finish with wooden stick', status: 'active', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
   const bannerV1    = await db.collection('productVersions').add({ productId: bannerId, version: 'V1', description: 'Standard banner', status: 'active', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
   await db.collection('productVersions').add({ productId: butterflyId, version: 'V1', description: 'Standard butterfly', status: 'active', createdAt: ts(), updatedAt: ts() })
+  const partyHatV1  = await db.collection('productVersions').add({ productId: partyHatId, version: 'V1', description: 'Standard party hat', status: 'active', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
 
   // BOM items for Large Paper Rose V3
   await Promise.all([
@@ -64,6 +94,10 @@ async function seed() {
     db.collection('bomItems').add({ productVersionId: bannerV1, materialId: materials.whitePaper, quantity: 4, unit: 'sheets' }),
     db.collection('bomItems').add({ productVersionId: bannerV1, materialId: materials.goldRibbon, quantity: 0.5, unit: 'meters' }),
     db.collection('bomItems').add({ productVersionId: bannerV1, materialId: materials.glitter, quantity: 10, unit: 'grams' }),
+    // BOM items for Party Hat V1
+    db.collection('bomItems').add({ productVersionId: partyHatV1, materialId: materials.whitePaper, quantity: 1, unit: 'sheets' }),
+    db.collection('bomItems').add({ productVersionId: partyHatV1, materialId: materials.glitter, quantity: 5, unit: 'grams' }),
+    db.collection('bomItems').add({ productVersionId: partyHatV1, materialId: materials.glue, quantity: 3, unit: 'ml' }),
   ])
 
   // Inventory: Pink Paper purchase (with actual purchase doc)

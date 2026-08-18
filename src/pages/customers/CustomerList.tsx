@@ -7,9 +7,14 @@ import { Customer } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
 import ConfirmModal from '../../components/ConfirmModal'
+import PageHeader from '../../components/PageHeader'
+import DataGrid from '../../components/DataGrid'
+import StatusBadge from '../../components/StatusBadge'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { exportToCSV } from '../../utils/export'
+import { useAuth } from '../../hooks/useAuth'
+import { canWriteMaster } from '../../utils/roles'
 
 interface FormData {
   type: 'individual' | 'company'
@@ -22,6 +27,7 @@ interface FormData {
   city: string
   notes: string
   mapLink: string
+  gstin: string
 }
 
 function CustomerForm({
@@ -46,6 +52,7 @@ function CustomerForm({
     city: initial?.city ?? '',
     notes: initial?.notes ?? '',
     mapLink: initial?.mapLink ?? '',
+    gstin: initial?.gstin ?? '',
   })
   const [selectedPhotos, setSelectedPhotos] = useState<File[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
@@ -147,6 +154,10 @@ function CustomerForm({
           )}
         </div>
         <div className="mb-3">
+          <label className="form-label">GSTIN</label>
+          <input className="form-control" value={form.gstin} onChange={set('gstin')} />
+        </div>
+        <div className="mb-3">
           <label className="form-label">Notes</label>
           <textarea className="form-control" rows={3} value={form.notes} onChange={set('notes')} />
         </div>
@@ -166,6 +177,8 @@ function displayName(c: Customer): string {
 }
 
 export default function CustomerList() {
+  const { role } = useAuth()
+  const canEdit = canWriteMaster(role)
   const [customers, setCustomers] = useState<Customer[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -211,6 +224,7 @@ export default function CustomerList() {
         city: data.city,
         notes: data.notes,
         mapLink: data.mapLink,
+        gstin: data.gstin,
       }
     }
     return {
@@ -224,6 +238,7 @@ export default function CustomerList() {
       city: data.city,
       notes: data.notes,
       mapLink: data.mapLink,
+      gstin: data.gstin,
     }
   }
 
@@ -308,94 +323,117 @@ export default function CustomerList() {
   const showModal = showForm || editCustomer !== null
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <h4 className="mb-0">Customers</h4>
-        <div className="d-flex gap-2">
-          <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>
-            Export CSV
-          </button>
-          <button className="btn btn-primary btn-sm" onClick={openAdd}>
-            + Add Customer
-          </button>
+      <PageHeader
+        title="Customers"
+        subtitle={`${customers.length} on file`}
+        icon="👥"
+        actions={
+          <>
+            <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>
+              Export CSV
+            </button>
+            {canEdit && (
+              <Link to="/import?type=customers" className="btn btn-outline-secondary btn-sm">Import</Link>
+            )}
+            {canEdit && (
+              <button className="btn btn-primary btn-sm" onClick={openAdd}>
+                + Add Customer
+              </button>
+            )}
+          </>
+        }
+      />
+
+      <div className="card">
+        <div className="card-body pb-3">
+          <input
+            className="form-control"
+            placeholder="Search by name, email, or phone…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
         </div>
-      </div>
 
-      <div className="mb-3">
-        <input
-          className="form-control"
-          placeholder="Search by name, email, or phone…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
-
-      {loading ? (
+        {loading ? (
         <LoadingSpinner />
-      ) : filtered.length === 0 ? (
-        <EmptyState message={search ? 'No customers match your search.' : 'No customers yet. Add your first customer!'} />
       ) : (
-        <div className="table-responsive">
-          <table className="table table-hover align-middle">
-            <thead className="table-light">
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Phone</th>
-                <th>Email</th>
-                <th>City</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(c => (
-                <tr key={c.id}>
-                  <td>
-                    <Link to={`/customers/${c.id}`} className="fw-semibold text-decoration-none">
-                      {displayName(c)}
-                    </Link>
-                    {c.type === 'company' && c.contactPerson && (
-                      <div className="text-muted small">{c.contactPerson}</div>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`badge bg-${c.type === 'company' ? 'info' : 'secondary'} text-dark`}>
-                      {c.type === 'company' ? 'Company' : 'Individual'}
-                    </span>
-                  </td>
-                  <td>{c.phone}</td>
-                  <td>{c.email}</td>
-                  <td>{c.city}</td>
-                  <td>
-                    <span className={`badge bg-${c.status === 'active' ? 'success' : 'secondary'}`}>
-                      {c.status}
-                    </span>
-                  </td>
-                  <td>
-                    <div className="d-flex gap-2">
-                      <button
-                        className="btn btn-sm btn-outline-primary"
-                        onClick={() => openEdit(c)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className={`btn btn-sm btn-outline-${c.status === 'active' ? 'warning' : 'success'}`}
-                        onClick={() => setConfirmToggle(c)}
-                      >
-                        {c.status === 'active' ? 'Deactivate' : 'Activate'}
-                      </button>
-                    </div>
-                  </td>
+        <DataGrid
+          items={filtered}
+          resetKey={search}
+          empty={
+            <EmptyState
+              icon="👥"
+              message={search ? 'No customers match your search' : 'No customers yet'}
+              description={
+                search
+                  ? 'Try a different name, phone number or email.'
+                  : 'Add your first customer, or just tell the assistant about them.'
+              }
+            />
+          }
+        >
+          {pageItems => (
+            <>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Phone</th>
+                  <th>Email</th>
+                  <th>City</th>
+                  <th>Status</th>
+                  <th>Actions</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pageItems.map(c => (
+                  <tr key={c.id}>
+                    <td>
+                      <Link to={`/customers/${c.id}`} className="fw-semibold text-decoration-none">
+                        {displayName(c)}
+                      </Link>
+                      {c.type === 'company' && c.contactPerson && (
+                        <div className="text-muted small">{c.contactPerson}</div>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`badge bg-${c.type === 'company' ? 'info' : 'secondary'}`}>
+                        {c.type === 'company' ? 'Company' : 'Individual'}
+                      </span>
+                    </td>
+                    <td>{c.phone}</td>
+                    <td className="text-muted">{c.email}</td>
+                    <td>{c.city}</td>
+                    <td>
+                      <StatusBadge status={c.status} />
+                    </td>
+                    <td>
+                      <div className="d-flex gap-2">
+                        <button
+                          className="btn btn-sm btn-outline-primary"
+                          onClick={() => openEdit(c)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className={`btn btn-sm btn-outline-${c.status === 'active' ? 'warning' : 'success'}`}
+                          onClick={() => setConfirmToggle(c)}
+                        >
+                          {c.status === 'active' ? 'Deactivate' : 'Activate'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </>
+          )}
+        </DataGrid>
       )}
+      </div>
 
       {/* Add / Edit Modal */}
       {showModal && (

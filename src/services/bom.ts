@@ -11,6 +11,17 @@ export const bomService = {
     return snap.docs.map(d => ({ id: d.id, ...d.data() } as BomItem))
   },
 
+  async getByMaterialId(materialId: string): Promise<BomItem[]> {
+    const q = query(col, where('materialId', '==', materialId))
+    const snap = await getDocs(q)
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as BomItem))
+  },
+
+  async getAll(): Promise<BomItem[]> {
+    const snap = await getDocs(col)
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as BomItem))
+  },
+
   async create(item: Omit<BomItem, 'id'>): Promise<string> {
     const ref = await addDoc(col, item)
     return ref.id

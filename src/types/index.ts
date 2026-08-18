@@ -1,14 +1,25 @@
 import { Timestamp } from 'firebase/firestore'
 
-export type UserRole = 'owner' | 'worker'
+export type UserRole = 'owner' | 'admin' | 'worker' | 'viewer'
 
 export interface UserDoc {
   email: string
   name: string
   role: UserRole
+  active: boolean
+  whatsappPhone?: string
   createdAt: Timestamp
   createdBy: string
 }
+
+export interface WorkerOption {
+  id: string
+  name: string
+  email: string
+}
+
+export const GST_RATES = [0, 5, 12, 18, 28] as const
+export type GstRate = (typeof GST_RATES)[number]
 
 export interface Customer {
   id: string
@@ -24,6 +35,7 @@ export interface Customer {
   status: 'active' | 'inactive'
   mapLink?: string
   photoUrls?: string[]
+  gstin?: string
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -39,6 +51,8 @@ export interface Product {
   photoUrls?: string[]
   packagingNotes?: string
   packagingPhotoUrls?: string[]
+  gstRate?: number
+  hsnSac?: string
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -64,6 +78,8 @@ export interface Material {
   notes: string
   status: 'active' | 'inactive'
   photoUrls?: string[]
+  gstRate?: number
+  hsnSac?: string
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -97,6 +113,7 @@ export interface InventoryTransaction {
   referenceId: string
   notes: string
   createdAt: Timestamp
+  createdBy?: string
 }
 
 export type OrderStatus =
@@ -127,10 +144,17 @@ export interface Order {
   subtotal: number
   discount: number
   total: number
+  taxableSubtotal?: number
+  gstTotal?: number
+  grandTotal?: number
   status: OrderStatus
   notes: string
   statusHistory?: Partial<Record<OrderStatus, Timestamp>>
   shipment?: Shipment
+  assignedWorkerIds?: string[]
+  assignedWorkerNames?: string[]
+  assignedAt?: Timestamp
+  assignedBy?: string
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -146,6 +170,9 @@ export interface OrderItem {
   costPerUnit: number
   totalCost: number
   profit: number
+  gstRate?: number
+  taxableAmount?: number
+  gstAmount?: number
 }
 
 export type ProductionStatus = 'PLANNED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'
@@ -155,11 +182,20 @@ export interface Production {
   productId: string
   productVersionId: string
   quantity: number
+  expectedQuantity?: number
+  actualQuantity?: number
+  wasteQuantity?: number
+  batchCode?: string
+  orderId?: string | null
   productionDate: Timestamp
   totalMaterialCost: number
   costPerUnit: number
   status: ProductionStatus
   notes: string
+  assignedWorkerIds?: string[]
+  assignedWorkerNames?: string[]
+  assignedAt?: Timestamp
+  assignedBy?: string
   createdAt: Timestamp
 }
 
@@ -188,6 +224,7 @@ export interface Supplier {
   status: 'active' | 'inactive'
   mapLink?: string
   photoUrls?: string[]
+  gstin?: string
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -199,6 +236,9 @@ export interface Purchase {
   total: number
   itemCount?: number
   totalQty?: number
+  taxableSubtotal?: number
+  gstTotal?: number
+  grandTotal?: number
   status: 'DRAFT' | 'COMPLETED' | 'CANCELLED'
   notes: string
   createdAt: Timestamp
@@ -212,4 +252,31 @@ export interface PurchaseItem {
   quantity: number
   unitCost: number
   total: number
+  gstRate?: number
+  taxableAmount?: number
+  gstAmount?: number
+}
+
+export interface AuditLog {
+  id: string
+  actorId: string
+  actorName: string
+  action: string
+  entityType: string
+  entityId: string
+  before?: Record<string, unknown>
+  after?: Record<string, unknown>
+  createdAt: Timestamp
+}
+
+export interface WorkAssignment {
+  id: string
+  entityType: 'order' | 'production'
+  entityId: string
+  workerId: string
+  workerName: string
+  assignedBy: string
+  assignedAt: Timestamp
+  unassignedAt?: Timestamp | null
+  note?: string
 }

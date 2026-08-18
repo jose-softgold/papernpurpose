@@ -7,10 +7,14 @@ import { Supplier } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
 import ConfirmModal from '../../components/ConfirmModal'
+import PageHeader from '../../components/PageHeader'
+import DataGrid from '../../components/DataGrid'
+import StatusBadge from '../../components/StatusBadge'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { exportToCSV } from '../../utils/export'
 import { useAuth } from '../../hooks/useAuth'
+import { canWriteMaster, canWriteOps, isWorker as roleIsWorker } from '../../utils/roles'
 
 interface FormData {
   type: 'individual' | 'company'
@@ -23,6 +27,7 @@ interface FormData {
   city: string
   notes: string
   mapLink: string
+  gstin: string
 }
 
 function SupplierForm({
@@ -47,6 +52,7 @@ function SupplierForm({
     city: initial?.city ?? '',
     notes: initial?.notes ?? '',
     mapLink: initial?.mapLink ?? '',
+    gstin: initial?.gstin ?? '',
   })
   const [selectedPhotos, setSelectedPhotos] = useState<File[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
@@ -136,6 +142,10 @@ function SupplierForm({
           )}
         </div>
         <div className="mb-3">
+          <label className="form-label">GSTIN</label>
+          <input className="form-control" value={form.gstin} onChange={set('gstin')} />
+        </div>
+        <div className="mb-3">
           <label className="form-label">Notes</label>
           <textarea className="form-control" rows={3} value={form.notes} onChange={set('notes')} />
         </div>
@@ -164,7 +174,9 @@ export default function SupplierList() {
   const [saving, setSaving] = useState(false)
   const { toasts, showToast } = useToast()
   const { role } = useAuth()
-  const isWorker = role === 'worker'
+  const isWorker = roleIsWorker(role)
+  const canCreate = canWriteOps(role)
+  const canImport = canWriteMaster(role)
 
   const load = async () => {
     try {
@@ -198,7 +210,7 @@ export default function SupplierList() {
         contactPerson: data.contactPerson,
         phone: data.phone, email: data.email,
         address: data.address, city: data.city,
-        notes: data.notes, mapLink: data.mapLink,
+        notes: data.notes, mapLink: data.mapLink, gstin: data.gstin,
       }
     }
     return {
@@ -207,7 +219,7 @@ export default function SupplierList() {
       companyName: '', contactPerson: '',
       phone: data.phone, email: data.email,
       address: data.address, city: data.city,
-      notes: data.notes, mapLink: data.mapLink,
+      notes: data.notes, mapLink: data.mapLink, gstin: data.gstin,
     }
   }
 
@@ -288,83 +300,104 @@ export default function SupplierList() {
   const showModal = showForm || editSupplier !== null
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <h4 className="mb-0">Suppliers</h4>
-        <div className="d-flex gap-2">
-          {!isWorker && <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>}
-          <button className="btn btn-primary btn-sm" onClick={openAdd}>+ Add Supplier</button>
-        </div>
-      </div>
+      <PageHeader
+        title="Suppliers"
+        subtitle={`${suppliers.length} on file`}
+        icon="🏪"
+        actions={
+          <>
+            {!isWorker && <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>}
+            {canImport && <Link to="/import?type=suppliers" className="btn btn-outline-secondary btn-sm">Import</Link>}
+            {canCreate && (
+              <button className="btn btn-primary btn-sm" onClick={openAdd}>+ Add Supplier</button>
+            )}
+          </>
+        }
+      />
 
-      <div className="mb-3">
-        <input className="form-control" placeholder="Search by name, email, or phone…"
-          value={search} onChange={e => setSearch(e.target.value)} />
-      </div>
+      <div className="card">
+        <div className="card-body pb-3">
+          <input className="form-control" placeholder="Search by name, email, or phone…"
+            value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
 
       {loading ? (
         <LoadingSpinner />
-      ) : filtered.length === 0 ? (
-        <EmptyState message={search ? 'No suppliers match your search.' : 'No suppliers yet. Add your first supplier!'} />
       ) : (
-        <div className="table-responsive">
-          <table className="table table-hover align-middle">
-            <thead className="table-light">
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Phone</th>
-                <th>Email</th>
-                <th>City</th>
-                <th>Status</th>
-                {!isWorker && <th>Actions</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(s => (
-                <tr key={s.id}>
-                  <td>
-                    <Link to={`/suppliers/${s.id}`} className="fw-semibold text-decoration-none">
-                      {displayName(s)}
-                    </Link>
-                    {s.type === 'company' && s.contactPerson && (
-                      <div className="text-muted small">{s.contactPerson}</div>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`badge bg-${s.type === 'company' ? 'info' : 'secondary'} text-dark`}>
-                      {s.type === 'company' ? 'Company' : 'Individual'}
-                    </span>
-                  </td>
-                  <td>{s.phone || '—'}</td>
-                  <td>{s.email || '—'}</td>
-                  <td>{s.city || '—'}</td>
-                  <td>
-                    <span className={`badge bg-${s.status === 'active' ? 'success' : 'secondary'}`}>
-                      {s.status}
-                    </span>
-                  </td>
-                  {!isWorker && (
-                    <td>
-                      <div className="d-flex gap-2">
-                        <button className="btn btn-sm btn-outline-primary" onClick={() => openEdit(s)}>Edit</button>
-                        <button
-                          className={`btn btn-sm btn-outline-${s.status === 'active' ? 'warning' : 'success'}`}
-                          onClick={() => setConfirmToggle(s)}
-                        >
-                          {s.status === 'active' ? 'Deactivate' : 'Activate'}
-                        </button>
-                      </div>
-                    </td>
-                  )}
+        <DataGrid
+          items={filtered}
+          resetKey={search}
+          empty={
+            <EmptyState
+              icon="🏪"
+              message={search ? 'No suppliers match your search' : 'No suppliers yet'}
+              description={
+                search
+                  ? 'Try a different name, phone number or email.'
+                  : 'Add your first supplier, or name one while logging a purchase with the assistant.'
+              }
+            />
+          }
+        >
+          {pageItems => (
+            <>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Type</th>
+                  <th>Phone</th>
+                  <th>Email</th>
+                  <th>City</th>
+                  <th>Status</th>
+                  {!isWorker && <th>Actions</th>}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {pageItems.map(s => (
+                  <tr key={s.id}>
+                    <td>
+                      <Link to={`/suppliers/${s.id}`} className="fw-semibold text-decoration-none">
+                        {displayName(s)}
+                      </Link>
+                      {s.type === 'company' && s.contactPerson && (
+                        <div className="text-muted small">{s.contactPerson}</div>
+                      )}
+                    </td>
+                    <td>
+                      <span className={`badge bg-${s.type === 'company' ? 'info' : 'secondary'}`}>
+                        {s.type === 'company' ? 'Company' : 'Individual'}
+                      </span>
+                    </td>
+                    <td>{s.phone || '—'}</td>
+                    <td className="text-muted">{s.email || '—'}</td>
+                    <td>{s.city || '—'}</td>
+                    <td>
+                      <StatusBadge status={s.status} />
+                    </td>
+                    {!isWorker && (
+                      <td>
+                        <div className="d-flex gap-2">
+                          <button className="btn btn-sm btn-outline-primary" onClick={() => openEdit(s)}>Edit</button>
+                          <button
+                            className={`btn btn-sm btn-outline-${s.status === 'active' ? 'warning' : 'success'}`}
+                            onClick={() => setConfirmToggle(s)}
+                          >
+                            {s.status === 'active' ? 'Deactivate' : 'Activate'}
+                          </button>
+                        </div>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </>
+          )}
+        </DataGrid>
       )}
+      </div>
 
       {showModal && (
         <>

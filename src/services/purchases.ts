@@ -1,6 +1,8 @@
 import { collection, doc, getDocs, query, orderBy, serverTimestamp, writeBatch, Timestamp } from 'firebase/firestore'
-import { db } from '../firebase/config'
+import { db, auth } from '../firebase/config'
 import { Purchase } from '../types'
+import { lineTax, roundMoney } from '../utils/tax'
+import { auditService } from './audit'
 
 export const purchaseService = {
   async getAll(): Promise<Purchase[]> {
@@ -13,17 +15,24 @@ export const purchaseService = {
     supplierId: string
     purchaseDate: Timestamp
     notes: string
-    items: Array<{ materialId: string; quantity: number; unitCost: number; unit: string }>
+    items: Array<{ materialId: string; quantity: number; unitCost: number; unit: string; gstRate?: number }>
     billPhotoUrls?: string[]
   }): Promise<string> {
     const batch = writeBatch(db)
-    const total = params.items.reduce((s, i) => s + i.quantity * i.unitCost, 0)
+    const taxLines = params.items.map(i => lineTax(i.quantity, i.unitCost, i.gstRate ?? 0))
+    const taxableSubtotal = roundMoney(taxLines.reduce((s, l) => s + l.taxableAmount, 0))
+    const gstTotal = roundMoney(taxLines.reduce((s, l) => s + l.gstAmount, 0))
+    const grandTotal = roundMoney(taxableSubtotal + gstTotal)
+    const createdBy = auth.currentUser?.uid ?? ''
 
     const purchaseRef = doc(collection(db, 'purchases'))
     batch.set(purchaseRef, {
       supplierId: params.supplierId,
       purchaseDate: params.purchaseDate,
-      total,
+      total: grandTotal,
+      taxableSubtotal,
+      gstTotal,
+      grandTotal,
       itemCount: params.items.length,
       totalQty: params.items.reduce((s, i) => s + i.quantity, 0),
       status: 'COMPLETED',
@@ -32,14 +41,18 @@ export const purchaseService = {
       createdAt: serverTimestamp(),
     })
 
-    for (const item of params.items) {
+    params.items.forEach((item, idx) => {
+      const tax = taxLines[idx]
       const piRef = doc(collection(db, 'purchaseItems'))
       batch.set(piRef, {
         purchaseId: purchaseRef.id,
         materialId: item.materialId,
         quantity: item.quantity,
         unitCost: item.unitCost,
-        total: item.quantity * item.unitCost,
+        total: tax.lineTotal,
+        gstRate: item.gstRate ?? 0,
+        taxableAmount: tax.taxableAmount,
+        gstAmount: tax.gstAmount,
       })
 
       const txRef = doc(collection(db, 'inventoryTransactions'))
@@ -53,10 +66,17 @@ export const purchaseService = {
         referenceId: purchaseRef.id,
         notes: 'Purchase from supplier',
         createdAt: serverTimestamp(),
+        createdBy,
       })
-    }
+    })
 
     await batch.commit()
+    await auditService.log({
+      action: 'purchase.complete',
+      entityType: 'purchase',
+      entityId: purchaseRef.id,
+      after: { supplierId: params.supplierId, grandTotal, itemCount: params.items.length },
+    })
     return purchaseRef.id
   },
 }

@@ -1,17 +1,40 @@
-# Party Craft — Inventory & Customer Management
+# Paper&Purpose — Inventory & Customer Management
 
-A web application for managing a small party-decoration and paper-craft business. Track inventory using an append-only transaction ledger, manage customers and orders, and generate profitability reports with historical cost and price snapshots.
+A web app for a small party-decoration / paper-craft business. Track stock with an append-only ledger, manage customers and orders, import spreadsheets, and use an optional Gemini-powered CRM assistant. Profit reports use historical cost and price snapshots.
 
 ## Tech Stack
 
 - **Frontend:** React 18 + Vite + TypeScript
-- **Styling:** Bootstrap 5
-- **Backend:** Firebase (Firestore, Authentication, Storage)
-- **Local Development:** Firebase Emulator Suite
+- **Styling:** Bootstrap 5 + custom theme (`src/styles/theme.css`)
+- **Backend:** Firebase (Firestore, Authentication, Storage, Cloud Functions)
+- **AI assistant:** Gemini (optional API key) via Cloud Function `chatAssistant`
+- **Local development:** Firebase Emulator Suite
+
+## Roles
+
+| Role | Access |
+|------|--------|
+| `owner` | Full access + user management |
+| `admin` | Same CRM access as owner; can manage users (cannot create owners unless already owner) |
+| `worker` | Orders status, purchases, production, materials/suppliers |
+| `viewer` | Read-only dashboards and lists |
+
+Accounts are created under **Settings → Users**. The first login bootstraps an owner only when the `users` collection is empty.
+
+After sign-in, the home route is the **AI assistant** (`/`). Use the sidebar **Workspace** links for CRM pages (workers land on orders instead of the dashboard).
+
+## Features
+
+- **AI assistant** — domain tools (`log_purchase`, `create_order`, etc.) with confirm-before-write
+- **Import** — spreadsheet import for orders and related master data (owners/admins)
+- **GST fields** — GSTIN and tax helpers on customers, suppliers, and orders
+- **Inventory ledger** — append-only stock transactions (never edit qty in place)
+- **Orders** — status pipeline with timeline, shipment details, and role-aware advancement
+- **Reports & history** — profitability and audit-friendly history views
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 18+ (Functions target Node 20)
 - Firebase CLI: `npm install -g firebase-tools`
 
 ## Local Development Setup
@@ -20,59 +43,83 @@ A web application for managing a small party-decoration and paper-craft business
 
 ```bash
 npm install
+npm install --prefix functions
+npm run build:functions
 ```
 
 ### 2. Start Firebase Emulators
 
-In one terminal, start the Firebase Emulator Suite. Use `--import` and `--export-on-exit` to persist data (accounts, Firestore docs) across restarts:
+In one terminal (Auth, Firestore, Storage, Functions). Persist data across restarts with `--import` / `--export-on-exit`:
+
+```bash
+npm run emulators:persist
+```
+
+Or equivalently:
 
 ```bash
 firebase emulators:start --project demo-project --import=./emulator-data --export-on-exit=./emulator-data
 ```
 
-The Emulator UI will be available at: http://localhost:4000
+Optional AI key for the Functions emulator:
 
-> **First run:** The `emulator-data/` directory won't exist yet — that's fine. The flag is ignored on first run and the directory is created on exit.
+```bash
+export LLM_API_KEY=your-gemini-key
+export LLM_MODEL=gemini-3.6-flash
+```
+
+Emulator UI: http://localhost:4000  
+Functions: http://localhost:5001
+
+Copy `.env.example` to `.env.local` and set `VITE_USE_EMULATOR=true` for local runs.
 
 ### 3. Start Dev Server
-
-In a separate terminal:
 
 ```bash
 npm run dev
 ```
 
-The app will be available at: http://localhost:5173
+App: http://localhost:5173
 
 ### 4. Create Owner Account (first run only)
 
-On a fresh emulator the database is empty. Run this script to create the owner account and seed sample data:
+With emulators running on a fresh database:
 
 ```bash
 npm run seed
 ```
 
-Then log in with:
+Then log in:
 
-| Field    | Value                     |
-|----------|---------------------------|
-| Email    | `admin@partycraft.com`    |
-| Password | `Admin@1234`              |
-| Role     | Owner                     |
+| Field    | Value                  |
+|----------|------------------------|
+| Email    | `admin@partycraft.com` |
+| Password | `Admin@1234`           |
+| Role     | Owner                  |
 
-> After first run, always start emulators with `--import=./emulator-data` so accounts survive restarts.
+After the first run, always start emulators with `--import=./emulator-data` so accounts survive restarts.
+
+### Useful scripts
+
+| Script | Purpose |
+|--------|---------|
+| `npm run emulators` | Emulators without persistence |
+| `npm run emulators:persist` | Emulators with import/export |
+| `npm run build:functions` | Compile Cloud Functions |
+| `npm run rules:check` | Firestore rules unit checks |
+| `npm run seed` | Seed owner + sample data (emulator) |
 
 ---
 
 ## Testing on Mobile / Other Devices
 
-To access the app from a phone or another device on the same Wi-Fi:
+Same Wi-Fi as the machine running the app:
 
-### 1. Find your machine's LAN IP
+### 1. Find your LAN IP
 
 ```bash
-ipconfig getifaddr en0
-# e.g. 192.168.0.110
+ipconfig getifaddr en0   # macOS
+hostname -I              # Linux
 ```
 
 ### 2. Set the emulator host in `.env.local`
@@ -82,40 +129,27 @@ VITE_USE_EMULATOR=true
 VITE_EMULATOR_HOST=192.168.0.110   # replace with your IP
 ```
 
+If `VITE_EMULATOR_HOST` is empty, the app uses the page hostname (localhost or your LAN IP).
+
 ### 3. Start the dev server with host flag
 
 ```bash
 npm run dev -- --host
 ```
 
-The emulators already bind to `0.0.0.0` (all interfaces) so they're reachable at your LAN IP. On your mobile, open `http://192.168.0.110:5173`.
-
-> Remove `VITE_EMULATOR_HOST` (or set it back to `localhost`) when testing on your own machine only.
+Emulators bind to `0.0.0.0`, so they are reachable at your LAN IP. On mobile open `http://<your-ip>:5173`.
 
 ---
 
-## User Roles
+## AI assistant
 
-The app has two roles: **Owner** and **Worker**.
+The assistant is the default home page and also available from **Ask the AI** in the sidebar. It calls Cloud Function `chatAssistant`, which uses Gemini plus domain tools. Writes require explicit confirmation in the UI.
 
-### Owner
-Full access to all pages and data including costs, pricing, and profit figures.
-
-### Worker
-Restricted access — sees no financial data. Can:
-- View and advance orders: CONFIRMED → IN PRODUCTION → READY → DISPATCHED
-- Fill in shipment details (logistics company, tracking ID, shipping cost, photos)
-- Record material purchases (quantities only, no costs shown)
-- Log production runs
-- Add materials and suppliers
-
-Workers are created by the owner via **Settings → Worker Accounts**.
+Set `LLM_API_KEY` (from [Google AI Studio](https://aistudio.google.com/)) on Functions. Without a key, the chat still responds with a setup hint. Optional: `LLM_MODEL` (default `gemini-3.6-flash`).
 
 ---
 
 ## Order Status Flow
-
-Orders move through the following stages:
 
 ```
 DRAFT → QUOTED → CONFIRMED → IN PRODUCTION → READY → DISPATCHED → DELIVERED → COMPLETED
@@ -123,74 +157,55 @@ DRAFT → QUOTED → CONFIRMED → IN PRODUCTION → READY → DISPATCHED → DE
 
 | Status        | Who can advance | Notes                                      |
 |---------------|-----------------|--------------------------------------------|
-| DRAFT         | Owner           | Initial state when order is created        |
-| QUOTED        | Owner           | Price quote sent to customer               |
-| CONFIRMED     | Owner           | Customer confirmed, work can begin         |
-| IN PRODUCTION | Owner / Worker  | Items being made                           |
-| READY         | Owner / Worker  | Production complete, ready to ship         |
-| DISPATCHED    | Owner / Worker  | Handed to courier — shipment details added |
-| DELIVERED     | Owner           | Customer received the order                |
-| COMPLETED     | Owner           | Payment received, order closed             |
-| CANCELLED     | Owner           | Can be set from any non-completed state    |
+| DRAFT         | Owner / Admin   | Initial state when order is created        |
+| QUOTED        | Owner / Admin   | Price quote sent to customer               |
+| CONFIRMED     | Owner / Admin   | Customer confirmed, work can begin         |
+| IN PRODUCTION | Owner / Admin / Worker | Items being made                    |
+| READY         | Owner / Admin / Worker | Production complete, ready to ship  |
+| DISPATCHED    | Owner / Admin / Worker | Courier + shipment details          |
+| DELIVERED     | Owner / Admin   | Customer received the order                |
+| COMPLETED     | Owner / Admin   | Payment received, order closed             |
+| CANCELLED     | Owner / Admin   | From any non-completed state               |
 
-Each status change is timestamped and shown on the **Order Timeline** in the order detail page, along with the event date as a deadline marker.
-
-### Shipment Details
-
-When an order reaches DISPATCHED, a Shipment Details card appears where you can record:
-- Logistics company
-- Tracking ID
-- Shipping cost
-- Photos (receipts, proof of dispatch)
-
-Workers can fill in all shipment fields including cost.
-
----
-
-## Seed Sample Data
-
-With emulators running, populate the database with sample data:
-
-```bash
-npm run seed
-```
-
-This creates customers, products, materials, and associated transactions for testing.
+Status changes are timestamped on the **Order Timeline**. At DISPATCHED you can record logistics company, tracking ID, shipping cost, and photos.
 
 ---
 
 ## Production Firebase Setup
 
-To deploy to production Firebase:
-
 1. Create a Firebase project at [console.firebase.google.com](https://console.firebase.google.com)
-2. Enable: Firestore Database, Authentication (email/password), Cloud Storage
-3. Copy your Firebase config values to `.env.production`
-4. Deploy Firestore and Storage rules:
+2. Enable: Firestore, Authentication (email/password), Cloud Storage, Cloud Functions
+3. Copy config values into `.env.production` (see `.env.example`)
+4. Set Functions secrets/env: `LLM_API_KEY` (and optional `LLM_MODEL`)
+5. Deploy rules, indexes, and functions:
    ```bash
-   firebase deploy --only firestore:rules,storage
+   firebase deploy --only firestore:rules,firestore:indexes,storage,functions
    ```
-5. Build and deploy the app:
+6. Build the web app:
    ```bash
    npm run build
    ```
+   Host `dist/` with Firebase Hosting or any static host.
 
 ---
 
 ## Project Structure
 
 ```
+functions/                # Cloud Functions (chatAssistant + domain tools)
+├── src/
+│   ├── domain/tools.ts
+│   ├── llm/gemini.ts
+│   ├── actor.ts
+│   ├── authz.ts
+│   └── index.ts
 src/
-├── components/           # Reusable UI components
-│   ├── ConfirmModal.tsx
-│   ├── EmptyState.tsx
-│   ├── LoadingSpinner.tsx
-│   ├── ProtectedRoute.tsx
-│   └── ToastContainer.tsx
-├── firebase/             # Firebase configuration and initialization
-├── hooks/                # Custom React hooks
-├── layouts/              # Page layout wrappers
-├── pages/                # Feature pages
+├── components/           # UI primitives (DataGrid, GstFields, routes guards, …)
+├── firebase/             # App + emulator wiring
+├── layouts/              # AppLayout, Sidebar, TopBar
+├── pages/
+│   ├── assistant/        # AI home
+│   ├── import/           # Spreadsheet import
 │   ├── customers/
 │   ├── history/
 │   ├── inventory/
@@ -200,34 +215,25 @@ src/
 │   ├── production/
 │   ├── purchases/
 │   ├── reports/
-│   ├── settings/
+│   ├── settings/         # UserManager
 │   ├── Dashboard.tsx
 │   └── Login.tsx
-├── routes/               # Route configuration
-├── services/             # Firestore service layer
-│   ├── bom.ts           # Bill of Materials
-│   ├── customers.ts
-│   ├── inventory.ts
-│   ├── materials.ts
-│   ├── orders.ts
-│   ├── production.ts
-│   ├── products.ts
-│   ├── purchases.ts
-│   ├── reports.ts
-│   └── suppliers.ts
-├── types/                # TypeScript type definitions
-├── utils/                # Utility functions and helpers
-├── App.tsx
-└── main.tsx
+├── services/             # Firestore layer (+ audit, users)
+├── styles/theme.css
+├── types/
+└── utils/                # roles, tax, importParse, export, …
+scripts/
+├── seed.ts
+└── rules-check.mjs
 ```
 
 ---
 
 ## Key Business Rules
 
-- **Inventory Ledger:** Stock is tracked via an append-only transaction ledger. Never directly edit stock quantities — all changes must be recorded as transactions (PRODUCTION, PURCHASE, ORDER, TRANSFORMATION).
-- **Historical Snapshots:** Production costs and selling prices are frozen at the time of the event. Historical records remain immutable for accurate profit calculations.
-- **Order Cancellation:** Orders are cancelled (`status = CANCELLED`) rather than deleted, preserving the full transaction history for audit trails.
-- **Product Versions:** Product versions are immutable once used in production or orders. Create a new version if specifications need to change.
-- **Profit Calculation:** Profit = (Selling Price × Quantity Sold) − (Cost Price × Quantity Sold), using historical prices captured at transaction time.
-- **Status Timestamps:** Every order status transition is recorded with a server timestamp in `statusHistory`, shown on the order timeline.
+- **Inventory ledger:** Stock changes only via transactions (`PRODUCTION`, `PURCHASE`, `ORDER`, `TRANSFER`). Never edit quantities directly.
+- **Historical snapshots:** Production costs and selling prices are frozen at event time for accurate profit.
+- **Order cancellation:** Set `status = CANCELLED` instead of deleting; keep the audit trail.
+- **Product versions:** Immutable once used in production or orders; create a new version for changes.
+- **Profit:** `(Selling Price × Qty) − (Cost Price × Qty)` using snapshot prices.
+- **Status timestamps:** Every transition is stored in `statusHistory` on the order timeline.

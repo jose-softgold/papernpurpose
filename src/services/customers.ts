@@ -4,12 +4,13 @@ import {
 } from 'firebase/firestore'
 import { db } from '../firebase/config'
 import { Customer } from '../types'
+import { auditService } from './audit'
 
 const col = collection(db, 'customers')
 
 export const customerService = {
   async getAll(): Promise<Customer[]> {
-    const q = query(col, orderBy('name'))
+    const q = query(col, orderBy('createdAt', 'desc'))
     const snap = await getDocs(q)
     return snap.docs.map(d => ({ id: d.id, ...d.data() } as Customer))
   },
@@ -26,6 +27,12 @@ export const customerService = {
       status: 'active',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+    })
+    await auditService.log({
+      action: 'customer.create',
+      entityType: 'customer',
+      entityId: ref.id,
+      after: { name: data.name },
     })
     return ref.id
   },

@@ -1,5 +1,20 @@
 import * as XLSX from 'xlsx'
 
+export function parseSpreadsheet(file: File): Promise<Record<string, string>[]> {
+  return file.arrayBuffer().then(buf => {
+    const wb = XLSX.read(buf, { type: 'array' })
+    const sheet = wb.Sheets[wb.SheetNames[0]]
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: '' })
+    return rows.map(row => {
+      const out: Record<string, string> = {}
+      for (const [k, v] of Object.entries(row)) {
+        out[String(k).trim().toLowerCase().replace(/\s+/g, ' ')] = String(v ?? '').trim()
+      }
+      return out
+    })
+  })
+}
+
 export function exportToCSV(data: Record<string, unknown>[], filename: string): void {
   const ws = XLSX.utils.json_to_sheet(data)
   const csv = XLSX.utils.sheet_to_csv(ws)

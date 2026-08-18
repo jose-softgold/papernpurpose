@@ -10,9 +10,15 @@ import { materialService } from '../../services/materials'
 import { Product, ProductVersion, Production, OrderItem, Order, BomItem, Material } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import ConfirmModal from '../../components/ConfirmModal'
+import StatusBadge from '../../components/StatusBadge'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { formatCurrency, formatDate, formatPercent } from '../../utils/format'
+import { sortByNewest } from '../../utils/sort'
+import { gstLabel, suggestedSell } from '../../utils/tax'
+import { callRunDomainTool } from '../../firebase/functions'
+import EntityQuickCreate from '../../components/EntityQuickCreate'
+import { GstRateSelect } from '../../components/GstFields'
 
 type Tab = 'overview' | 'packaging' | 'performance' | 'production' | 'sales' | 'customers' | 'bom'
 
@@ -51,7 +57,7 @@ export default function ProductDetail() {
 
   // Edit product inline
   const [editingProduct, setEditingProduct] = useState(false)
-  const [productForm, setProductForm] = useState({ name: '', category: '', description: '', defaultSellingPrice: '' })
+  const [productForm, setProductForm] = useState({ name: '', category: '', description: '', defaultSellingPrice: '', gstRate: '0', hsnSac: '' })
   const [savingProduct, setSavingProduct] = useState(false)
 
   // Add version
@@ -62,6 +68,9 @@ export default function ProductDetail() {
   // BOM
   const [loadingBom, setLoadingBom] = useState(false)
   const [showAddBom, setShowAddBom] = useState(false)
+  const [showMaterialCreate, setShowMaterialCreate] = useState(false)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiResult, setAiResult] = useState<Record<string, unknown> | null>(null)
   const [bomForm, setBomForm] = useState({ materialId: '', quantity: '', unit: '' })
   const [savingBom, setSavingBom] = useState(false)
   const [editBomItem, setEditBomItem] = useState<BomItem | null>(null)
@@ -101,13 +110,18 @@ export default function ProductDetail() {
           category: prod.category,
           description: prod.description,
           defaultSellingPrice: String(prod.defaultSellingPrice),
+          gstRate: String(prod.gstRate ?? 0),
+          hsnSac: prod.hsnSac ?? '',
         })
         setVersions(vers)
-        // default selected version = last active
-        const active = vers.filter(v => v.status === 'active').at(-1)
-        setSelectedVersionId(active?.id ?? vers.at(-1)?.id ?? '')
+        // default selected version = newest active
+        const active = vers.filter(v => v.status === 'active').at(0)
+        setSelectedVersionId(active?.id ?? vers.at(0)?.id ?? '')
         setStock(stockVal)
-        setProductions(allProductions.filter(p => p.productId === id))
+        setProductions(sortByNewest(
+          allProductions.filter(p => p.productId === id),
+          p => p.productionDate,
+        ))
         const myOrderItems = allOrderItems.filter(oi => oi.productId === id)
         setOrderItems(myOrderItems)
         setOrders(allOrders)
@@ -154,11 +168,14 @@ export default function ProductDetail() {
   const orderCustomerMap = Object.fromEntries(orders.map(o => [o.id, o.customerId]))
 
   // Sales rows
-  const salesRows = activeOrderItems.map(oi => ({
-    oi,
-    date: orderDateMap[oi.orderId] ?? null,
-    customerName: customerMap[orderCustomerMap[oi.orderId]] ?? '—',
-  }))
+  const salesRows = sortByNewest(
+    activeOrderItems.map(oi => ({
+      oi,
+      date: orderDateMap[oi.orderId] ?? null,
+      customerName: customerMap[orderCustomerMap[oi.orderId]] ?? '—',
+    })),
+    row => row.date,
+  )
 
   // Customers aggregated
   interface CustomerAgg { name: string; qty: number; totalSpent: number }
@@ -182,6 +199,8 @@ export default function ProductDetail() {
         category: productForm.category.trim(),
         description: productForm.description.trim(),
         defaultSellingPrice: parseFloat(productForm.defaultSellingPrice) || 0,
+        gstRate: parseFloat(productForm.gstRate) || 0,
+        hsnSac: productForm.hsnSac.trim(),
       }
       await productService.update(id, updates)
       setProduct(prev => prev ? { ...prev, ...updates } : prev)
@@ -363,7 +382,7 @@ export default function ProductDetail() {
 
   if (loading) return <LoadingSpinner />
   if (!product) return (
-    <div className="container-fluid py-3">
+    <div>
       <p className="text-danger">Product not found.</p>
       <button className="btn btn-secondary" onClick={() => navigate('/products')}>Back</button>
     </div>
@@ -380,14 +399,14 @@ export default function ProductDetail() {
   ]
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
       {/* Header */}
-      <div className="d-flex align-items-center gap-3 mb-4">
+      <div className="d-flex align-items-center gap-3 mb-4 flex-wrap">
         <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/products')}>&larr; Back</button>
-        <h4 className="mb-0">{product.name}</h4>
-        <span className={`badge bg-${product.status === 'active' ? 'success' : 'secondary'}`}>{product.status}</span>
+        <h4 className="pc-page-title">{product.name}</h4>
+        <StatusBadge status={product.status} />
       </div>
 
       {/* Tabs */}
@@ -407,6 +426,41 @@ export default function ProductDetail() {
       {/* ===== OVERVIEW ===== */}
       {activeTab === 'overview' && (
         <div>
+          <div className="card mb-3">
+            <div className="card-header d-flex justify-content-between align-items-center">
+              <h5 className="mb-0">AI product calculation</h5>
+              <button
+                className="btn btn-sm btn-primary"
+                disabled={aiLoading}
+                onClick={async () => {
+                  if (!id) return
+                  setAiLoading(true)
+                  try {
+                    const data = await callRunDomainTool('analyze_product', { productId: id })
+                    setAiResult((data as { result?: Record<string, unknown> }).result ?? data as Record<string, unknown>)
+                  } catch {
+                    showToast('AI calculation failed', 'danger')
+                  } finally {
+                    setAiLoading(false)
+                  }
+                }}
+              >
+                {aiLoading ? 'Calculating…' : 'AI calculate'}
+              </button>
+            </div>
+            {aiResult && (
+              <div className="card-body">
+                <div className="row g-3">
+                  <div className="col-md-4"><small className="text-muted d-block">Max buildable</small><strong>{String(aiResult.maxBuildable ?? '—')}</strong></div>
+                  <div className="col-md-4"><small className="text-muted d-block">Cost / unit</small><strong>{formatCurrency(Number(aiResult.costPerUnit ?? 0))}</strong></div>
+                  <div className="col-md-4"><small className="text-muted d-block">Suggested sell (taxable)</small><strong>{formatCurrency(Number(aiResult.suggestedTaxableSell ?? 0))}</strong></div>
+                  <div className="col-md-4"><small className="text-muted d-block">Invoice with GST</small><strong>{formatCurrency(Number(aiResult.suggestedInvoiceTotal ?? 0))}</strong></div>
+                  <div className="col-md-4"><small className="text-muted d-block">Avg yield vs expected</small><strong>{String(aiResult.yieldPct ?? '—')}</strong></div>
+                  <div className="col-12"><small className="text-muted d-block">Notes</small>{String(aiResult.guidance ?? '—')}</div>
+                </div>
+              </div>
+            )}
+          </div>
           {/* Product info card */}
           <div className="card mb-3">
             <div className="card-header d-flex justify-content-between align-items-center">
@@ -430,9 +484,17 @@ export default function ProductDetail() {
                         onChange={e => setProductForm(f => ({ ...f, category: e.target.value }))} />
                     </div>
                     <div className="col-md-6">
-                      <label className="form-label">Default Selling Price (₹)</label>
+                      <label className="form-label">Default Selling Price (₹, taxable)</label>
                       <input className="form-control" type="number" min="0" step="0.01" value={productForm.defaultSellingPrice}
                         onChange={e => setProductForm(f => ({ ...f, defaultSellingPrice: e.target.value }))} />
+                    </div>
+                    <div className="col-md-3">
+                      <GstRateSelect value={productForm.gstRate} onChange={rate => setProductForm(f => ({ ...f, gstRate: String(rate) }))} />
+                    </div>
+                    <div className="col-md-3">
+                      <label className="form-label">HSN / SAC</label>
+                      <input className="form-control" value={productForm.hsnSac}
+                        onChange={e => setProductForm(f => ({ ...f, hsnSac: e.target.value }))} />
                     </div>
                     <div className="col-12">
                       <label className="form-label">Description</label>
@@ -458,6 +520,10 @@ export default function ProductDetail() {
                   <div className="col-md-4">
                     <small className="text-muted d-block">Default Selling Price</small>
                     <span>{formatCurrency(product.defaultSellingPrice)}</span>
+                  </div>
+                  <div className="col-md-4">
+                    <small className="text-muted d-block">GST / HSN</small>
+                    <span>{gstLabel(product.gstRate)} {product.hsnSac ? `· ${product.hsnSac}` : ''}</span>
                   </div>
                   <div className="col-md-4">
                     <small className="text-muted d-block">Current Stock</small>
@@ -602,21 +668,22 @@ export default function ProductDetail() {
                     <thead className="table-light">
                       <tr>
                         <th>Target Margin</th>
-                        <th>Suggested Price</th>
-                        <th>Profit/Unit</th>
+                        <th>Taxable sell</th>
+                        <th>GST</th>
+                        <th>Invoice total</th>
                         <th>vs. Default Price</th>
                       </tr>
                     </thead>
                     <tbody>
                       {[10, 20, 30, 40, 50].map(pct => {
-                        const suggested = avgCostPerUnit / (1 - pct / 100)
-                        const profit = suggested - avgCostPerUnit
-                        const diff = suggested - product.defaultSellingPrice
+                        const quote = suggestedSell(avgCostPerUnit, pct, product.gstRate ?? 0)
+                        const diff = quote.taxableSell - product.defaultSellingPrice
                         return (
                           <tr key={pct} className={Math.abs(margin - pct) < 5 ? 'table-success' : ''}>
                             <td className="fw-semibold">{pct}%</td>
-                            <td>{formatCurrency(suggested)}</td>
-                            <td>{formatCurrency(profit)}</td>
+                            <td>{formatCurrency(quote.taxableSell)}</td>
+                            <td>{formatCurrency(quote.gstAmount)}</td>
+                            <td>{formatCurrency(quote.invoiceTotal)}</td>
                             <td className={diff > 0 ? 'text-success' : diff < 0 ? 'text-danger' : ''}>
                               {diff > 0 ? `+${formatCurrency(diff)}` : diff < 0 ? formatCurrency(diff) : '—'}
                             </td>
@@ -628,8 +695,8 @@ export default function ProductDetail() {
                       <tr>
                         <td className="fw-semibold">Current (actual)</td>
                         <td>{formatCurrency(avgSellingPrice)}</td>
-                        <td>{formatCurrency(profitPerUnit)}</td>
-                        <td className="text-muted">actual avg</td>
+                        <td colSpan={2} className="text-muted">actual avg taxable</td>
+                        <td className="text-muted">GST {gstLabel(product.gstRate)}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -656,8 +723,10 @@ export default function ProductDetail() {
                 <thead className="table-light">
                   <tr>
                     <th>Date</th>
+                    <th>Batch</th>
                     <th>Version</th>
-                    <th>Qty</th>
+                    <th>Expected</th>
+                    <th>Actual</th>
                     <th>Cost/Unit (₹)</th>
                     <th>Total Cost (₹)</th>
                   </tr>
@@ -666,8 +735,10 @@ export default function ProductDetail() {
                   {productions.map(p => (
                     <tr key={p.id}>
                       <td>{formatDate(p.productionDate)}</td>
+                      <td className="font-monospace">{p.batchCode || '—'}</td>
                       <td>{versionMap[p.productVersionId] ?? '—'}</td>
-                      <td>{p.quantity}</td>
+                      <td>{p.expectedQuantity ?? p.quantity}</td>
+                      <td>{p.actualQuantity ?? p.quantity}</td>
                       <td>{formatCurrency(p.costPerUnit)}</td>
                       <td>{formatCurrency(p.totalMaterialCost)}</td>
                     </tr>
@@ -782,8 +853,10 @@ export default function ProductDetail() {
                     <th>Material</th>
                     <th>Quantity</th>
                     <th>Unit</th>
+                    <th>GST</th>
                     <th className="text-end">Cost/Unit (₹)</th>
                     <th className="text-end">Line Cost (₹)</th>
+                    <th className="text-end">Est. tax / unit</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -791,13 +864,16 @@ export default function ProductDetail() {
                   {bomItems.map(b => {
                     const mat = materialMap[b.materialId]
                     const lineCost = b.quantity * (mat?.costPerUnit ?? 0)
+                    const taxPerUnit = lineCost * ((mat?.gstRate ?? 0) / 100)
                     return (
                       <tr key={b.id}>
                         <td>{mat?.name ?? b.materialId}</td>
                         <td>{b.quantity}</td>
                         <td>{b.unit}</td>
+                        <td>{gstLabel(mat?.gstRate)}</td>
                         <td className="text-end">{mat ? formatCurrency(mat.costPerUnit) : '—'}</td>
                         <td className="text-end">{mat ? formatCurrency(lineCost) : '—'}</td>
+                        <td className="text-end">{mat ? formatCurrency(taxPerUnit) : '—'}</td>
                         <td>
                           <button className="btn btn-outline-secondary btn-sm me-1"
                             onClick={() => { setEditBomItem(b); setEditBomForm({ quantity: String(b.quantity), unit: b.unit }) }}>
@@ -811,9 +887,15 @@ export default function ProductDetail() {
                 </tbody>
                 <tfoot className="table-light fw-semibold">
                   <tr>
-                    <td colSpan={4} className="text-end">Estimated Material Cost / Unit Produced:</td>
+                    <td colSpan={5} className="text-end">Estimated Material Cost / Unit Produced:</td>
                     <td className="text-end">
                       {formatCurrency(bomItems.reduce((s, b) => s + b.quantity * (materialMap[b.materialId]?.costPerUnit ?? 0), 0))}
+                    </td>
+                    <td className="text-end">
+                      {formatCurrency(bomItems.reduce((s, b) => {
+                        const mat = materialMap[b.materialId]
+                        return s + b.quantity * (mat?.costPerUnit ?? 0) * ((mat?.gstRate ?? 0) / 100)
+                      }, 0))}
                     </td>
                     <td />
                   </tr>
@@ -884,6 +966,7 @@ export default function ProductDetail() {
                           <option key={m.id} value={m.id}>{m.name} ({m.unit})</option>
                         ))}
                       </select>
+                      <button type="button" className="btn btn-outline-primary btn-sm mt-2" onClick={() => setShowMaterialCreate(true)}>+ New material</button>
                     </div>
                     <div className="mb-3">
                       <label className="form-label">Quantity <span className="text-danger">*</span></label>
@@ -1012,6 +1095,17 @@ export default function ProductDetail() {
         </div>
       )}
 
+      <EntityQuickCreate
+        kind="material"
+        show={showMaterialCreate}
+        onCancel={() => setShowMaterialCreate(false)}
+        onCreated={created => {
+          if (created.kind !== 'material') return
+          setMaterials(prev => [...prev, created.entity])
+          setBomForm(f => ({ ...f, materialId: created.entity.id, unit: created.entity.unit }))
+          setShowMaterialCreate(false)
+        }}
+      />
       {/* Delete BOM confirm */}
       <ConfirmModal
         show={!!deleteBomId}

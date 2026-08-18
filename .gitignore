@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+functions/node_modules/
+functions/lib/
 
 # Build
 dist/
@@ -21,6 +23,7 @@ ui-debug.log
 
 # Firebase emulator data
 emulator-data/
+firebase-export-*/
 
 # Editor / OS
 .DS_Store

@@ -3,8 +3,8 @@ import { useAuth } from '../hooks/useAuth'
 import LoadingSpinner from './LoadingSpinner'
 
 export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth()
+  const { user, role, loading } = useAuth()
   if (loading) return <LoadingSpinner />
-  if (!user) return <Navigate to="/login" replace />
+  if (!user || !role) return <Navigate to="/login" replace />
   return <>{children}</>
 }

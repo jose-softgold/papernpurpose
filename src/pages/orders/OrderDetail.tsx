@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
 import { useAuth } from '../../hooks/useAuth'
+import { isWorker as roleIsWorker } from '../../utils/roles'
 import { orderService } from '../../services/orders'
 import { customerService } from '../../services/customers'
 import { productService } from '../../services/products'
@@ -12,6 +13,10 @@ import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { formatCurrency, formatDate } from '../../utils/format'
+import { usersService } from '../../services/users'
+import WorkerPicker from '../../components/WorkerPicker'
+import { isAdminOrOwner } from '../../utils/roles'
+import type { WorkerOption } from '../../types'
 
 const STATUS_BADGE: Record<OrderStatus, string> = {
   DRAFT: 'secondary',
@@ -63,8 +68,12 @@ export default function OrderDetail() {
   const [loading, setLoading] = useState(true)
   const [transitioning, setTransitioning] = useState(false)
   const [showCancel, setShowCancel] = useState(false)
-  const { role } = useAuth()
-  const isWorker = role === 'worker'
+  const { role, user } = useAuth()
+  const isWorker = roleIsWorker(role)
+  const canAssign = isAdminOrOwner(role)
+  const [workers, setWorkers] = useState<WorkerOption[]>([])
+  const [assignedIds, setAssignedIds] = useState<string[]>([])
+  const [savingAssign, setSavingAssign] = useState(false)
 
   // Shipment form state
   const [shipLogistics, setShipLogistics] = useState('')
@@ -82,6 +91,7 @@ export default function OrderDetail() {
   const load = async () => {
     if (!id) return
     setLoading(true)
+    let redirected = false
     try {
       const [o, rawItems, products, versions] = await Promise.all([
         orderService.getById(id),
@@ -90,7 +100,13 @@ export default function OrderDetail() {
         productService.getAllVersions(),
       ])
       if (!o) { showToast('Order not found', 'danger'); setLoading(false); return }
+      if (isWorker && !(o.assignedWorkerIds ?? []).includes(user?.uid ?? '')) {
+        redirected = true
+        navigate('/orders', { replace: true })
+        return
+      }
       setOrder(o)
+      setAssignedIds(o.assignedWorkerIds ?? [])
 
       // Populate shipment form from stored data
       setShipLogistics(o.shipment?.logisticsCompany ?? '')
@@ -111,13 +127,21 @@ export default function OrderDetail() {
         setCustomer(c)
       }
     } catch {
+      if (isWorker) {
+        redirected = true
+        navigate('/orders', { replace: true })
+        return
+      }
       showToast('Failed to load order', 'danger')
     } finally {
-      setLoading(false)
+      if (!redirected) setLoading(false)
     }
   }
 
   useEffect(() => { load() }, [id])
+  useEffect(() => {
+    if (canAssign) usersService.listWorkers().then(setWorkers).catch(() => {})
+  }, [canAssign])
 
   const handleTransition = async (next: OrderStatus) => {
     if (!id) return
@@ -165,7 +189,7 @@ export default function OrderDetail() {
       await orderService.updateShipment(id, {
         logisticsCompany: shipLogistics,
         trackingId: shipTracking,
-        cost: parseFloat(shipCost) || 0,
+        cost: isWorker ? (order?.shipment?.cost ?? 0) : (parseFloat(shipCost) || 0),
         photoUrls,
       })
       showToast('Shipment details saved', 'success')
@@ -181,7 +205,7 @@ export default function OrderDetail() {
 
   if (loading) return <LoadingSpinner />
   if (!order) return (
-    <div className="container-fluid py-3">
+    <div>
       <p className="text-danger">Order not found.</p>
       <button className="btn btn-secondary" onClick={() => navigate('/orders')}>Back</button>
     </div>
@@ -200,9 +224,28 @@ export default function OrderDetail() {
   const currentIdx = STATUS_ORDER.indexOf(order.status)
   const showShipment = ['DISPATCHED', 'DELIVERED', 'COMPLETED'].includes(order.status)
   const shipmentReadOnly = order.status === 'COMPLETED'
+  const canEditAssignment = canAssign && order.status === 'IN_PRODUCTION'
+  const hasAssignment = (order.assignedWorkerNames ?? []).length > 0
+  const laterStatus = !['DRAFT', 'QUOTED', 'CONFIRMED'].includes(order.status)
+  const showAssignedReadOnly = !canEditAssignment && (isWorker || order.status === 'IN_PRODUCTION' || (laterStatus && hasAssignment))
+
+  const handleSaveAssignment = async () => {
+    if (!id) return
+    setSavingAssign(true)
+    try {
+      const names = workers.filter(w => assignedIds.includes(w.id)).map(w => w.name)
+      await orderService.assign(id, assignedIds, names, user?.uid ?? '')
+      showToast('Assignment saved')
+      await load()
+    } catch {
+      showToast('Could not save assignment', 'danger')
+    } finally {
+      setSavingAssign(false)
+    }
+  }
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
       <ConfirmModal
         show={showCancel}
@@ -245,7 +288,7 @@ export default function OrderDetail() {
           <div className="row g-3">
             <div className="col-md-3">
               <small className="text-muted d-block">Customer</small>
-              <span className="fw-semibold">{customer?.name ?? order.customerId}</span>
+              <span className="fw-semibold">{isWorker ? '—' : (customer?.name ?? order.customerId)}</span>
             </div>
             <div className="col-md-3">
               <small className="text-muted d-block">Order Date</small>
@@ -259,7 +302,25 @@ export default function OrderDetail() {
               <small className="text-muted d-block">Event Type</small>
               <span>{order.eventType || '—'}</span>
             </div>
+            {showAssignedReadOnly && (
+              <div className="col-md-12">
+                <small className="text-muted d-block">Assigned</small>
+                <span>{(order.assignedWorkerNames ?? []).join(', ') || 'Unassigned'}</span>
+              </div>
+            )}
           </div>
+          {canEditAssignment && (
+            <div className="mt-3 pt-3 border-top">
+              <WorkerPicker workers={workers} selectedIds={assignedIds} onChange={setAssignedIds} />
+              <button
+                className="btn btn-sm btn-outline-primary mt-2"
+                disabled={savingAssign}
+                onClick={handleSaveAssignment}
+              >
+                {savingAssign ? 'Saving…' : 'Save assignment'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -358,10 +419,12 @@ export default function OrderDetail() {
                   <small className="text-muted d-block">Tracking ID</small>
                   <span>{order.shipment?.trackingId || '—'}</span>
                 </div>
-                <div className="col-md-4">
-                  <small className="text-muted d-block">Shipping Cost</small>
-                  <span>{order.shipment?.cost != null ? formatCurrency(order.shipment.cost) : '—'}</span>
-                </div>
+                {!isWorker && (
+                  <div className="col-md-4">
+                    <small className="text-muted d-block">Shipping Cost</small>
+                    <span>{order.shipment?.cost != null ? formatCurrency(order.shipment.cost) : '—'}</span>
+                  </div>
+                )}
                 {order.shipment?.photoUrls?.length ? (
                   <div className="col-12">
                     <small className="text-muted d-block mb-1">Photos</small>
@@ -396,18 +459,20 @@ export default function OrderDetail() {
                     placeholder="Tracking number"
                   />
                 </div>
-                <div className="col-md-4">
-                  <label className="form-label">Shipping Cost (₹)</label>
-                  <input
-                    type="number"
-                    className="form-control"
-                    min={0}
-                    step="0.01"
-                    value={shipCost}
-                    onChange={e => setShipCost(e.target.value)}
-                    placeholder="0"
-                  />
-                </div>
+                {!isWorker && (
+                  <div className="col-md-4">
+                    <label className="form-label">Shipping Cost (₹)</label>
+                    <input
+                      type="number"
+                      className="form-control"
+                      min={0}
+                      step="0.01"
+                      value={shipCost}
+                      onChange={e => setShipCost(e.target.value)}
+                      placeholder="0"
+                    />
+                  </div>
+                )}
                 <div className="col-12">
                   <label className="form-label">Photos</label>
                   <input
@@ -466,7 +531,8 @@ export default function OrderDetail() {
                 <th>Version</th>
                 <th>Qty</th>
                 {!isWorker && <th className="text-end">Unit Price</th>}
-                {!isWorker && <th className="text-end">Total</th>}
+                {!isWorker && <th className="text-end">GST</th>}
+                {!isWorker && <th className="text-end">Line</th>}
                 {!isWorker && <th className="text-end">Cost/Unit</th>}
                 {!isWorker && <th className="text-end">Total Cost</th>}
                 {!isWorker && <th className="text-end">Profit</th>}
@@ -479,6 +545,7 @@ export default function OrderDetail() {
                   <td>{item.versionLabel}</td>
                   <td>{item.quantity}</td>
                   {!isWorker && <td className="text-end">{formatCurrency(item.unitPrice)}</td>}
+                  {!isWorker && <td className="text-end">{item.gstRate ?? 0}%</td>}
                   {!isWorker && <td className="text-end">{formatCurrency(item.totalPrice)}</td>}
                   {!isWorker && <td className="text-end">{formatCurrency(item.costPerUnit)}</td>}
                   {!isWorker && <td className="text-end">{formatCurrency(item.totalCost)}</td>}
@@ -504,12 +571,22 @@ export default function OrderDetail() {
             <div className="card">
               <div className="card-body">
                 <div className="d-flex justify-content-between mb-2">
-                  <span className="text-muted">Subtotal</span>
-                  <span>{formatCurrency(order.subtotal)}</span>
+                  <span className="text-muted">Subtotal (taxable)</span>
+                  <span>{formatCurrency(order.taxableSubtotal ?? order.subtotal)}</span>
                 </div>
+                <div className="d-flex justify-content-between mb-2">
+                  <span className="text-muted">GST</span>
+                  <span>{formatCurrency(order.gstTotal ?? 0)}</span>
+                </div>
+                {order.discount > 0 && (
+                  <div className="d-flex justify-content-between mb-2">
+                    <span className="text-muted">Discount</span>
+                    <span>-{formatCurrency(order.discount)}</span>
+                  </div>
+                )}
                 <div className="d-flex justify-content-between fw-bold border-top pt-2 mb-2">
-                  <span>Total</span>
-                  <span>{formatCurrency(order.total)}</span>
+                  <span>Grand total</span>
+                  <span>{formatCurrency(order.grandTotal ?? order.total)}</span>
                 </div>
                 <div className="d-flex justify-content-between text-muted small mb-1">
                   <span>Total Cost</span>

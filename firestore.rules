@@ -2,17 +2,62 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isOwner() {
-      return !exists(/databases/$(database)/documents/users/$(request.auth.uid)) ||
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'owner';
+    function signedIn() {
+      return request.auth != null;
     }
+
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasUserDoc() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    // Legacy docs may predate the `active` flag, so treat a missing value as active
+    function userActive() {
+      return hasUserDoc() && userDoc().get('active', true) == true;
+    }
+
+    function role() {
+      return userDoc().get('role', '');
+    }
+
+    function isOwner() {
+      return userActive() && role() == 'owner';
+    }
+
+    function isAdmin() {
+      return userActive() && role() == 'admin';
+    }
+
     function isWorker() {
-      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'worker';
+      return userActive() && role() == 'worker';
+    }
+
+    function isViewer() {
+      return userActive() && role() == 'viewer';
+    }
+
+    function isAdminOrOwner() {
+      return isOwner() || isAdmin();
+    }
+
+    function canWriteOps() {
+      return isAdminOrOwner() || isWorker();
+    }
+
+    function canRead() {
+      return userActive();
+    }
+
+    function bootstrapClaimed() {
+      return exists(/databases/$(database)/documents/meta/bootstrap);
     }
 
     function onlyStatusChange() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'statusHistory']);
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['status', 'updatedAt', 'statusHistory']);
     }
     function workerAllowedTransition() {
       return (resource.data.status == 'CONFIRMED' && request.resource.data.status == 'IN_PRODUCTION') ||
@@ -20,100 +65,140 @@ service cloud.firestore {
              (resource.data.status == 'READY' && request.resource.data.status == 'DISPATCHED');
     }
     function onlyShipmentUpdate() {
-      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(['shipment', 'updatedAt']);
+      return request.resource.data.diff(resource.data).affectedKeys()
+        .hasOnly(['shipment', 'updatedAt']);
     }
     function workerCanUpdateShipment() {
       return resource.data.status in ['READY', 'DISPATCHED', 'DELIVERED'];
     }
+    function assignedToMe() {
+      return request.auth.uid in resource.data.get('assignedWorkerIds', []);
+    }
+
+    // One-time marker claimed by the very first owner
+    match /meta/{docId} {
+      allow get: if signedIn();
+      allow create: if signedIn() && docId == 'bootstrap' && !bootstrapClaimed();
+      allow update, delete, list: if false;
+    }
 
     match /users/{uid} {
-      allow read: if request.auth != null && (request.auth.uid == uid || isOwner());
-      allow write: if request.auth != null && isOwner();
+      allow get: if signedIn() && (request.auth.uid == uid || isAdminOrOwner());
+      allow list: if isAdminOrOwner();
+      allow create: if signedIn() && (
+        isAdminOrOwner() ||
+        (request.auth.uid == uid
+          && request.resource.data.role == 'owner'
+          && request.resource.data.active == true
+          && !bootstrapClaimed())
+      );
+      allow update: if isAdminOrOwner();
+      allow delete: if isOwner();
     }
 
     match /orders/{orderId} {
-      allow read: if request.auth != null && (
-        isOwner() ||
-        (isWorker() && resource.data.status in ['CONFIRMED', 'IN_PRODUCTION', 'READY', 'DISPATCHED', 'DELIVERED', 'COMPLETED'])
+      allow read: if canRead() && (
+        isAdminOrOwner() || isViewer() ||
+        (isWorker() && assignedToMe() && resource.data.status in [
+          'CONFIRMED', 'IN_PRODUCTION', 'READY', 'DISPATCHED', 'DELIVERED', 'COMPLETED'
+        ])
       );
-      allow create: if request.auth != null && isOwner();
-      allow update: if request.auth != null && (
-        isOwner() ||
-        (isWorker() && onlyStatusChange() && workerAllowedTransition()) ||
-        (isWorker() && onlyShipmentUpdate() && workerCanUpdateShipment())
-      );
+      allow create: if isAdminOrOwner();
+      allow update: if isAdminOrOwner() ||
+        (isWorker() && assignedToMe() && onlyStatusChange() && workerAllowedTransition()) ||
+        (isWorker() && assignedToMe() && onlyShipmentUpdate() && workerCanUpdateShipment());
       allow delete: if false;
     }
 
-    match /orders/{orderId}/items/{itemId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && isOwner();
-    }
-
-    // Top-level orderItems collection (actual storage path used by getItems)
     match /orderItems/{docId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow write: if isAdminOrOwner();
     }
 
-    // Products and versions: workers can read (need to know what they're making)
     match /products/{docId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow write: if isAdminOrOwner();
     }
     match /productVersions/{docId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow write: if isAdminOrOwner();
+    }
+    match /bomItems/{docId} {
+      allow read: if canRead();
+      allow write: if isAdminOrOwner();
     }
 
-    // Suppliers: workers can read and create
+    match /customers/{docId} {
+      allow read: if canRead() && (isAdminOrOwner() || isViewer());
+      allow write: if isAdminOrOwner();
+    }
+
     match /suppliers/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow create: if canWriteOps();
+      allow update, delete: if isAdminOrOwner();
     }
 
-    // Materials: workers can read and create
     match /materials/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow create: if canWriteOps();
+      allow update, delete: if isAdminOrOwner();
     }
 
-    // Purchases: workers can read and create
     match /purchases/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow create: if canWriteOps();
+      allow update, delete: if isAdminOrOwner();
     }
     match /purchaseItems/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow create: if canWriteOps();
+      allow update, delete: if isAdminOrOwner();
     }
 
-    // Production: workers can read and create
-    match /production/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && isOwner();
+    match /productions/{docId} {
+      allow read: if canRead() && (
+        isAdminOrOwner() || isViewer() ||
+        (isWorker() && assignedToMe())
+      );
+      allow create: if canWriteOps();
+      allow update: if isAdminOrOwner() || (isWorker() && assignedToMe());
+      allow delete: if isAdminOrOwner();
     }
     match /productionMaterials/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if request.auth != null && isOwner();
+      allow read: if canRead();
+      allow create: if canWriteOps();
+      allow update, delete: if canWriteOps();
     }
 
-    // inventoryTransactions: all authenticated can read (workers need stock levels) and create
     match /inventoryTransactions/{docId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
+      allow read: if canRead();
+      allow create: if canWriteOps();
       allow update, delete: if false;
     }
 
-    // All other collections: owner only
+    match /auditLogs/{docId} {
+      allow read: if canRead() && (isAdminOrOwner() || isViewer());
+      allow create: if canWriteOps();
+      allow update, delete: if false;
+    }
+
+    match /workAssignments/{docId} {
+      allow read: if canRead();
+      allow create: if isAdminOrOwner();
+      allow update, delete: if isAdminOrOwner();
+    }
+
+    match /chatSessions/{sessionId} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if signedIn() && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == request.auth.uid;
+    }
+
     match /{collection}/{docId} {
-      allow read, write: if request.auth != null && isOwner();
+      allow read: if canRead() && (isAdminOrOwner() || isViewer());
+      allow write: if isAdminOrOwner();
     }
   }
 }

@@ -32,7 +32,7 @@ export default function SupplierDetail() {
   const [form, setForm] = useState({
     type: 'individual' as 'individual' | 'company',
     name: '', companyName: '', contactPerson: '',
-    phone: '', email: '', address: '', city: '', notes: '', mapLink: '',
+    phone: '', email: '', address: '', city: '', notes: '', mapLink: '', gstin: '',
   })
   const { toasts, showToast } = useToast()
 
@@ -54,6 +54,7 @@ export default function SupplierDetail() {
             city: s.city ?? '',
             notes: s.notes,
             mapLink: s.mapLink ?? '',
+            gstin: s.gstin ?? '',
           })
         }
       } catch {
@@ -72,7 +73,7 @@ export default function SupplierDetail() {
         companyName: form.companyName, contactPerson: form.contactPerson,
         phone: form.phone, email: form.email,
         address: form.address, city: form.city,
-        notes: form.notes, mapLink: form.mapLink,
+        notes: form.notes, mapLink: form.mapLink, gstin: form.gstin,
       }
     }
     return {
@@ -81,7 +82,7 @@ export default function SupplierDetail() {
       companyName: '', contactPerson: '',
       phone: form.phone, email: form.email,
       address: form.address, city: form.city,
-      notes: form.notes, mapLink: form.mapLink,
+      notes: form.notes, mapLink: form.mapLink, gstin: form.gstin,
     }
   }
 
@@ -138,7 +139,7 @@ export default function SupplierDetail() {
 
   if (loading) return <LoadingSpinner />
   if (!supplier) return (
-    <div className="container-fluid py-3">
+    <div>
       <p className="text-danger">Supplier not found.</p>
       <button className="btn btn-secondary" onClick={() => navigate('/suppliers')}>Back</button>
     </div>
@@ -147,18 +148,18 @@ export default function SupplierDetail() {
   const isCompany = supplier.type === 'company'
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
-      <div className="d-flex align-items-center gap-3 mb-4">
+      <div className="d-flex align-items-center gap-3 mb-4 flex-wrap">
         <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/suppliers')}>&larr; Back</button>
         <div>
-          <h4 className="mb-0">{displayName(supplier)}</h4>
+          <h4 className="pc-page-title">{displayName(supplier)}</h4>
           {isCompany && supplier.contactPerson && (
             <small className="text-muted">Contact: {supplier.contactPerson}</small>
           )}
         </div>
-        <span className={`badge bg-${isCompany ? 'info text-dark' : 'secondary'}`}>
+        <span className={`badge bg-${isCompany ? 'info' : 'secondary'}`}>
           {isCompany ? 'Company' : 'Individual'}
         </span>
         <span className={`badge bg-${supplier.status === 'active' ? 'success' : 'secondary'}`}>
@@ -231,6 +232,10 @@ export default function SupplierDetail() {
                   <input className="form-control" value={form.address} onChange={set('address')} />
                 </div>
                 <div className="col-12">
+                  <label className="form-label">GSTIN</label>
+                  <input className="form-control" value={form.gstin} onChange={set('gstin')} />
+                </div>
+                <div className="col-12">
                   <label className="form-label">Google Maps Link</label>
                   <input className="form-control" placeholder="Paste a Google Maps URL or lat,lng" value={form.mapLink} onChange={set('mapLink')} />
                 </div>
@@ -273,6 +278,10 @@ export default function SupplierDetail() {
               <div className="col-md-6">
                 <small className="text-muted d-block">City</small>
                 <span>{supplier.city || '—'}</span>
+              </div>
+              <div className="col-md-6">
+                <small className="text-muted d-block">GSTIN</small>
+                <span>{supplier.gstin || '—'}</span>
               </div>
               <div className="col-md-6">
                 <small className="text-muted d-block">Added On</small>

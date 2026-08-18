@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
+import { isWorker as roleIsWorker, canWriteMaster } from '../../utils/roles'
 import { Timestamp } from 'firebase/firestore'
 import { orderService } from '../../services/orders'
 import { productService } from '../../services/products'
@@ -10,22 +11,16 @@ import { inventoryService } from '../../services/inventory'
 import { Order, OrderStatus, Customer, Product, ProductVersion, Production } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
+import PageHeader from '../../components/PageHeader'
+import DataGrid from '../../components/DataGrid'
+import StatusBadge from '../../components/StatusBadge'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { formatCurrency, formatDate } from '../../utils/format'
 import { exportToCSV } from '../../utils/export'
-
-const STATUS_BADGE: Record<OrderStatus, string> = {
-  DRAFT: 'secondary',
-  QUOTED: 'info',
-  CONFIRMED: 'primary',
-  IN_PRODUCTION: 'warning',
-  READY: 'success',
-  DISPATCHED: 'info',
-  DELIVERED: 'success',
-  COMPLETED: 'dark',
-  CANCELLED: 'danger',
-}
+import { lineTax } from '../../utils/tax'
+import EntityQuickCreate from '../../components/EntityQuickCreate'
+import QuickSelect from '../../components/QuickSelect'
 
 const ALL_STATUSES: OrderStatus[] = ['DRAFT', 'QUOTED', 'CONFIRMED', 'IN_PRODUCTION', 'READY', 'DISPATCHED', 'DELIVERED', 'COMPLETED', 'CANCELLED']
 
@@ -40,6 +35,7 @@ interface LineItem {
   quantity: string
   unitPrice: string
   costPerUnit: string
+  gstRate: string
 }
 
 const emptyLine = (): LineItem => ({
@@ -48,6 +44,7 @@ const emptyLine = (): LineItem => ({
   quantity: '1',
   unitPrice: '',
   costPerUnit: '',
+  gstRate: '0',
 })
 
 interface NewOrderForm {
@@ -93,15 +90,19 @@ export default function OrderList() {
   const [form, setForm] = useState<NewOrderForm>(emptyForm())
   const [lines, setLines] = useState<LineItem[]>([emptyLine()])
 
-  const { role } = useAuth()
-  const isWorker = role === 'worker'
+  const { role, user } = useAuth()
+  const isWorker = roleIsWorker(role)
+  const canMaster = canWriteMaster(role)
+  const [showCustomerCreate, setShowCustomerCreate] = useState(false)
+  const [myWorkOnly, setMyWorkOnly] = useState(false)
   const WORKER_VISIBLE: OrderStatus[] = ['CONFIRMED', 'IN_PRODUCTION', 'READY', 'DISPATCHED', 'DELIVERED', 'COMPLETED']
 
   const load = async () => {
+    if (isWorker && !user?.uid) return
     setLoading(true)
     try {
       const [orders, customers] = await Promise.all([
-        orderService.getAll(role === 'worker' ? WORKER_VISIBLE : undefined),
+        orderService.getAll(isWorker ? WORKER_VISIBLE : undefined, isWorker && user ? user.uid : undefined),
         isWorker ? Promise.resolve([]) : customerService.getAll(),
       ])
       const custMap = Object.fromEntries(customers.map(c => [c.id, c.name]))
@@ -113,7 +114,7 @@ export default function OrderList() {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { load() }, [isWorker, user?.uid])
 
   const openModal = async () => {
     setForm(emptyForm())
@@ -167,6 +168,7 @@ export default function OrderList() {
         next[i].productVersionId = vers[0]?.id ?? ''
         next[i].unitPrice = prod ? String(prod.defaultSellingPrice) : ''
         next[i].costPerUnit = String(latestCostFor(value))
+        next[i].gstRate = String(prod?.gstRate ?? 0)
       }
       return next
     })
@@ -176,7 +178,9 @@ export default function OrderList() {
   const removeLine = (i: number) => setLines(prev => prev.filter((_, idx) => idx !== i))
 
   const subtotal = lines.reduce((s, l) => s + (parseFloat(l.quantity) || 0) * (parseFloat(l.unitPrice) || 0), 0)
-  const total = subtotal
+  const gstTotal = lines.reduce((s, l) => s + lineTax(parseFloat(l.quantity) || 0, parseFloat(l.unitPrice) || 0, parseFloat(l.gstRate) || 0).gstAmount, 0)
+  const discountAmt = parseFloat(form.discount) || 0
+  const total = subtotal + gstTotal - discountAmt
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -201,6 +205,7 @@ export default function OrderList() {
           quantity: parseFloat(l.quantity),
           unitPrice: parseFloat(l.unitPrice) || 0,
           costPerUnit: parseFloat(l.costPerUnit) || 0,
+          gstRate: parseFloat(l.gstRate) || 0,
         })),
       })
       showToast('Order created')
@@ -226,66 +231,104 @@ export default function OrderList() {
     exportToCSV(data as unknown as Record<string, unknown>[], 'orders')
   }
 
-  const filtered = statusFilter === 'ALL' ? rows : rows.filter(r => r.status === statusFilter)
+  const filtered = (statusFilter === 'ALL' ? rows : rows.filter(r => r.status === statusFilter))
+    .filter(r => {
+      if (isWorker) return !!user && (r.assignedWorkerIds ?? []).includes(user.uid)
+      if (!myWorkOnly || !user) return true
+      return (r.assignedWorkerIds ?? []).includes(user.uid)
+    })
 
   if (loading) return <LoadingSpinner />
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <h4 className="mb-0">Orders</h4>
-        <div className="d-flex gap-2 align-items-center">
-          <select className="form-select form-select-sm" style={{ width: 160 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value as 'ALL' | OrderStatus)}>
-            <option value="ALL">All Statuses</option>
-            {ALL_STATUSES.map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
-          </select>
-          {!isWorker && <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>}
-          {!isWorker && <button className="btn btn-primary btn-sm" onClick={openModal}>+ New Order</button>}
-        </div>
-      </div>
+      <PageHeader
+        title={isWorker ? 'Assigned to me' : 'Orders'}
+        subtitle={
+          isWorker
+            ? (filtered.length ? `${filtered.length} assigned order${filtered.length === 1 ? '' : 's'}` : 'Orders assigned to you')
+            : `${filtered.length} shown${statusFilter === 'ALL' ? '' : ` · filtered by ${statusFilter.replace('_', ' ')}`}`
+        }
+        icon="📋"
+        actions={
+          <>
+            <select className="form-select form-select-sm" style={{ width: 160 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value as 'ALL' | OrderStatus)}>
+              <option value="ALL">All Statuses</option>
+              {(isWorker ? WORKER_VISIBLE : ALL_STATUSES).map(s => <option key={s} value={s}>{s.replace('_', ' ')}</option>)}
+            </select>
+            {!isWorker && (
+              <label className="form-check mb-0 small">
+                <input className="form-check-input" type="checkbox" checked={myWorkOnly} onChange={e => setMyWorkOnly(e.target.checked)} />
+                <span className="form-check-label">My work</span>
+              </label>
+            )}
+            {!isWorker && <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>}
+            {canMaster && <Link to="/import?type=orders" className="btn btn-outline-secondary btn-sm">Bulk import</Link>}
+            {!isWorker && <button className="btn btn-primary btn-sm" onClick={openModal}>+ New Order</button>}
+          </>
+        }
+      />
 
-      {filtered.length === 0 ? (
-        <EmptyState message="No orders found." />
-      ) : (
         <div className="card">
-          <div className="table-responsive">
-            <table className="table table-hover mb-0">
-              <thead className="table-light">
-                <tr>
-                  <th>Order ID</th>
-                  <th>Customer</th>
-                  <th>Order Date</th>
-                  <th>Event Type</th>
-                  {!isWorker && <th>Total</th>}
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(r => (
-                  <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/orders/${r.id}`)}>
-                    <td className="fw-semibold font-monospace">{r.id.slice(0, 6).toUpperCase()}</td>
-                    <td>{r.customerName}</td>
-                    <td>{formatDate(r.orderDate)}</td>
-                    <td>{r.eventType || '—'}</td>
-                    {!isWorker && <td>{formatCurrency(r.total)}</td>}
-                    <td>
-                      <span className={`badge bg-${STATUS_BADGE[r.status]}`}>{r.status.replace('_', ' ')}</span>
-                    </td>
-                    <td onClick={e => e.stopPropagation()}>
-                      <button className="btn btn-outline-primary btn-sm" onClick={() => navigate(`/orders/${r.id}`)}>
-                        View
-                      </button>
-                    </td>
+          <DataGrid
+            items={filtered}
+            resetKey={`${statusFilter}:${myWorkOnly}`}
+            empty={
+              <EmptyState
+                icon="📋"
+                message={isWorker ? 'Nothing assigned yet' : 'No orders found'}
+                description={
+                  isWorker
+                    ? (statusFilter === 'ALL'
+                      ? 'When an admin assigns you to an order, it will show up here.'
+                      : 'No assigned orders have this status right now.')
+                    : statusFilter === 'ALL'
+                      ? 'Create an order, or ask the assistant to log one for you.'
+                      : 'No orders have this status right now.'
+                }
+              />
+            }
+          >
+            {pageItems => (
+              <>
+                <thead>
+                  <tr>
+                    <th>Order ID</th>
+                    {!isWorker && <th>Customer</th>}
+                    <th>Order Date</th>
+                    <th>Event Type</th>
+                    <th>Assigned</th>
+                    {!isWorker && <th>Total</th>}
+                    <th>Status</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {pageItems.map(r => (
+                    <tr key={r.id} style={{ cursor: 'pointer' }} onClick={() => navigate(`/orders/${r.id}`)}>
+                      <td className="fw-semibold font-monospace">{r.id.slice(0, 6).toUpperCase()}</td>
+                      {!isWorker && <td>{r.customerName || '—'}</td>}
+                      <td className="text-muted">{formatDate(r.orderDate)}</td>
+                      <td>{r.eventType || '—'}</td>
+                      <td className="small">{(r.assignedWorkerNames ?? []).join(', ') || '—'}</td>
+                      {!isWorker && <td className="fw-semibold">{formatCurrency(r.grandTotal ?? r.total)}</td>}
+                      <td>
+                        <StatusBadge status={r.status} />
+                      </td>
+                      <td onClick={e => e.stopPropagation()}>
+                        <button className="btn btn-outline-primary btn-sm" onClick={() => navigate(`/orders/${r.id}`)}>
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </DataGrid>
         </div>
-      )}
 
       {/* New Order Modal */}
       {showModal && (
@@ -303,11 +346,15 @@ export default function OrderList() {
                     {step === 1 && (
                       <div className="row g-3">
                         <div className="col-md-6">
-                          <label className="form-label">Customer <span className="text-danger">*</span></label>
-                          <select className="form-select" value={form.customerId} onChange={setField('customerId')} required>
-                            <option value="">— Select Customer —</option>
-                            {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                          </select>
+                          <QuickSelect
+                            label="Customer"
+                            required
+                            value={form.customerId}
+                            onChange={id => setForm(f => ({ ...f, customerId: id }))}
+                            placeholder="— Select Customer —"
+                            options={customers.map(c => ({ id: c.id, label: c.name }))}
+                            onAdd={() => setShowCustomerCreate(true)}
+                          />
                         </div>
                         <div className="col-md-6">
                           <label className="form-label">Event Type</label>
@@ -320,6 +367,10 @@ export default function OrderList() {
                         <div className="col-md-6">
                           <label className="form-label">Event Date</label>
                           <input type="datetime-local" className="form-control" value={form.eventDate} onChange={setField('eventDate')} />
+                        </div>
+                        <div className="col-md-6">
+                          <label className="form-label">Discount (₹)</label>
+                          <input type="number" min="0" step="0.01" className="form-control" value={form.discount} onChange={setField('discount')} />
                         </div>
                         <div className="col-12">
                           <label className="form-label">Notes</label>
@@ -337,15 +388,16 @@ export default function OrderList() {
                                 <th>Product</th>
                                 <th>Version</th>
                                 <th style={{ width: 80 }}>Qty</th>
-                                <th style={{ width: 120 }}>Unit Price (₹)</th>
-                                <th style={{ width: 120 }}>Cost/Unit (₹)</th>
-                                <th style={{ width: 100 }}>Line Total</th>
+                                <th style={{ width: 110 }}>Unit Price</th>
+                                <th style={{ width: 90 }}>GST</th>
+                                <th style={{ width: 100 }}>Cost/Unit</th>
+                                <th style={{ width: 100 }}>Line</th>
                                 <th></th>
                               </tr>
                             </thead>
                             <tbody>
                               {lines.map((line, i) => {
-                                const lineTotal = (parseFloat(line.quantity) || 0) * (parseFloat(line.unitPrice) || 0)
+                                const tax = lineTax(parseFloat(line.quantity) || 0, parseFloat(line.unitPrice) || 0, parseFloat(line.gstRate) || 0)
                                 const vers = versionsFor(line.productId)
                                 const prod = products.find(p => p.id === line.productId)
                                 const stock = line.productId ? (productStocks[line.productId] ?? 0) : null
@@ -395,11 +447,16 @@ export default function OrderList() {
                                       />
                                     </td>
                                     <td>
+                                      <select className="form-select form-select-sm" value={line.gstRate} onChange={e => updateLine(i, 'gstRate', e.target.value)}>
+                                        {[0, 5, 12, 18, 28].map(r => <option key={r} value={r}>{r}%</option>)}
+                                      </select>
+                                    </td>
+                                    <td>
                                       <span className="form-control form-control-sm bg-light text-muted" style={{ display: 'block' }}>
                                         {line.costPerUnit || '—'}
                                       </span>
                                     </td>
-                                    <td className="text-end">{formatCurrency(lineTotal)}</td>
+                                    <td className="text-end">{formatCurrency(tax.lineTotal)}</td>
                                     <td>
                                       {lines.length > 1 && (
                                         <button type="button" className="btn btn-outline-danger btn-sm" onClick={() => removeLine(i)}>✕</button>
@@ -408,7 +465,7 @@ export default function OrderList() {
                                   </tr>
                                   {prod && (
                                     <tr className="table-light">
-                                      <td colSpan={7} className="py-1 px-3">
+                                      <td colSpan={8} className="py-1 px-3">
                                         <div className="d-flex flex-wrap gap-3 small text-muted">
                                           <span>
                                             <span className="fw-semibold text-dark">Stock: </span>
@@ -471,7 +528,10 @@ export default function OrderList() {
                               )
                             })()}
                           </div>
-                          <div className="text-end fw-bold">Total: {formatCurrency(total)}</div>
+                          <div className="text-end">
+                            <div className="small text-muted">Taxable {formatCurrency(subtotal)} · GST {formatCurrency(gstTotal)} · Discount {formatCurrency(discountAmt)}</div>
+                            <div className="fw-bold">Grand total: {formatCurrency(total)}</div>
+                          </div>
                         </div>
                       </>
                     )}
@@ -491,6 +551,17 @@ export default function OrderList() {
           </div>
         </>
       )}
+      <EntityQuickCreate
+        kind="customer"
+        show={showCustomerCreate}
+        onCancel={() => setShowCustomerCreate(false)}
+        onCreated={created => {
+          if (created.kind !== 'customer') return
+          setCustomers(prev => [...prev, created.entity])
+          setForm(f => ({ ...f, customerId: created.entity.id }))
+          setShowCustomerCreate(false)
+        }}
+      />
     </div>
   )
 }

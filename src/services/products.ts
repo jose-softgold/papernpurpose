@@ -1,10 +1,11 @@
 import { collection, doc, getDocs, getDoc, addDoc, updateDoc, query, where, orderBy, serverTimestamp } from 'firebase/firestore'
 import { db } from '../firebase/config'
 import { Product, ProductVersion } from '../types'
+import { sortByNewest } from '../utils/sort'
 
 export const productService = {
   async getAll(): Promise<Product[]> {
-    const q = query(collection(db, 'products'), orderBy('name'))
+    const q = query(collection(db, 'products'), orderBy('createdAt', 'desc'))
     const snap = await getDocs(q)
     return snap.docs.map(d => ({ id: d.id, ...d.data() } as Product))
   },
@@ -30,15 +31,17 @@ export const productService = {
     const q = query(
       collection(db, 'productVersions'),
       where('productId', '==', productId),
-      orderBy('version'),
     )
     const snap = await getDocs(q)
-    return snap.docs.map(d => ({ id: d.id, ...d.data() } as ProductVersion))
+    return sortByNewest(
+      snap.docs.map(d => ({ id: d.id, ...d.data() } as ProductVersion)),
+      v => v.createdAt,
+    )
   },
 
   async getActiveVersion(productId: string): Promise<ProductVersion | null> {
     const versions = await productService.getVersions(productId)
-    return versions.filter(v => v.status === 'active').at(-1) ?? null
+    return versions.filter(v => v.status === 'active').at(0) ?? null
   },
 
   async createVersion(data: Omit<ProductVersion, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
@@ -54,6 +57,9 @@ export const productService = {
 
   async getAllVersions(): Promise<ProductVersion[]> {
     const snap = await getDocs(collection(db, 'productVersions'))
-    return snap.docs.map(d => ({ id: d.id, ...d.data() } as ProductVersion))
+    return sortByNewest(
+      snap.docs.map(d => ({ id: d.id, ...d.data() } as ProductVersion)),
+      v => v.createdAt,
+    )
   },
 }

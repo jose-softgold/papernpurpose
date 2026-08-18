@@ -1,21 +1,35 @@
 import { useAuth } from '../../hooks/useAuth'
-import WorkerManager from './WorkerManager'
+import UserManager from './UserManager'
+import PageHeader from '../../components/PageHeader'
+import { canManageUsers, ROLE_LABELS } from '../../utils/roles'
 
 export default function SettingsPage() {
-  const { user, signOut, role } = useAuth()
+  const { user, userDoc, signOut, role } = useAuth()
 
   return (
-    <div className="container-fluid py-4">
-      <h4 className="mb-4">Settings</h4>
-      <div className="card" style={{ maxWidth: 400 }}>
+    <div>
+      <PageHeader title="Settings" subtitle="Your account and team access" icon="⚙️" />
+
+      <div className="card" style={{ maxWidth: 480 }}>
         <div className="card-body">
-          <h5 className="card-title">Account</h5>
-          <p className="mb-1 text-muted">Signed in as:</p>
-          <p className="fw-semibold mb-4">{user?.email}</p>
-          <button className="btn btn-danger" onClick={signOut}>Sign Out</button>
+          <div className="d-flex align-items-center gap-3">
+            <span className="pc-avatar is-user" style={{ width: 44, height: 44, fontSize: '1rem' }}>
+              {(userDoc?.name || user?.email || '?').charAt(0).toUpperCase()}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div className="fw-semibold">{userDoc?.name || 'Account'}</div>
+              <div className="small text-muted text-truncate">{user?.email}</div>
+              {role && <span className="pc-role-pill mt-1">{ROLE_LABELS[role]}</span>}
+            </div>
+          </div>
+          <hr />
+          <button className="btn btn-outline-secondary btn-sm" onClick={signOut}>
+            Sign Out
+          </button>
         </div>
       </div>
-      {role === 'owner' && <WorkerManager />}
+
+      {canManageUsers(role) && <UserManager />}
     </div>
   )
 }

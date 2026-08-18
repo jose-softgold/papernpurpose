@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../../hooks/useAuth'
+import { canWriteMaster, canWriteOps, isWorker as roleIsWorker } from '../../utils/roles'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
 import { materialService } from '../../services/materials'
@@ -9,10 +10,18 @@ import { Material, Supplier, InventoryTransaction } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
 import ConfirmModal from '../../components/ConfirmModal'
+import PageHeader from '../../components/PageHeader'
+import DataGrid from '../../components/DataGrid'
+import StatusBadge from '../../components/StatusBadge'
+import StatCard from '../../components/StatCard'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { exportToCSV } from '../../utils/export'
 import { formatCurrency, formatDate } from '../../utils/format'
+import EntityQuickCreate from '../../components/EntityQuickCreate'
+import QuickSelect from '../../components/QuickSelect'
+import { GstRateSelect } from '../../components/GstFields'
+import { Link } from 'react-router-dom'
 
 interface FormData {
   name: string
@@ -22,6 +31,8 @@ interface FormData {
   costPerUnit: string
   supplierId: string
   notes: string
+  gstRate: string
+  hsnSac: string
 }
 
 
@@ -32,6 +43,7 @@ function MaterialForm({
   onCancel,
   saving,
   isWorker,
+  onSuppliersChange,
 }: {
   initial?: Partial<Material>
   suppliers: Supplier[]
@@ -39,6 +51,7 @@ function MaterialForm({
   onCancel: () => void
   saving: boolean
   isWorker?: boolean
+  onSuppliersChange: (list: Supplier[]) => void
 }) {
   const [form, setForm] = useState<FormData>({
     name: initial?.name ?? '',
@@ -48,9 +61,12 @@ function MaterialForm({
     costPerUnit: String(initial?.costPerUnit ?? 0),
     supplierId: initial?.supplierId ?? '',
     notes: initial?.notes ?? '',
+    gstRate: String(initial?.gstRate ?? 0),
+    hsnSac: initial?.hsnSac ?? '',
   })
   const [selectedPhotos, setSelectedPhotos] = useState<File[]>([])
   const fileRef = useRef<HTMLInputElement>(null)
+  const [showSupplier, setShowSupplier] = useState(false)
 
   const set = (field: keyof FormData) =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
@@ -97,15 +113,38 @@ function MaterialForm({
             </small>
           </div>
         )}
+        {!isWorker && (
+          <div className="row">
+            <div className="col-md-6 mb-3">
+              <GstRateSelect value={form.gstRate} onChange={rate => setForm(f => ({ ...f, gstRate: String(rate) }))} />
+            </div>
+            <div className="col-md-6 mb-3">
+              <label className="form-label">HSN / SAC</label>
+              <input className="form-control" value={form.hsnSac} onChange={set('hsnSac')} />
+            </div>
+          </div>
+        )}
         <div className="mb-3">
-          <label className="form-label">Supplier</label>
-          <select className="form-select" value={form.supplierId} onChange={set('supplierId')}>
-            <option value="">— None —</option>
-            {suppliers.map(s => (
-              <option key={s.id} value={s.id}>{s.name}</option>
-            ))}
-          </select>
+          <QuickSelect
+            label="Supplier"
+            value={form.supplierId}
+            onChange={id => setForm(f => ({ ...f, supplierId: id }))}
+            placeholder="— None —"
+            options={suppliers.map(s => ({ id: s.id, label: s.name }))}
+            onAdd={() => setShowSupplier(true)}
+          />
         </div>
+        <EntityQuickCreate
+          kind="supplier"
+          show={showSupplier}
+          onCancel={() => setShowSupplier(false)}
+          onCreated={created => {
+            if (created.kind !== 'supplier') return
+            onSuppliersChange([...suppliers, created.entity])
+            setForm(f => ({ ...f, supplierId: created.entity.id }))
+            setShowSupplier(false)
+          }}
+        />
         <div className="mb-3">
           <label className="form-label">Photos</label>
           <input ref={fileRef} type="file" accept="image/*" multiple className="form-control"
@@ -151,33 +190,37 @@ function TransactionHistoryPanel({
       <div className="card-body p-0">
         {loading ? (
           <div className="p-3"><LoadingSpinner /></div>
-        ) : transactions.length === 0 ? (
-          <div className="p-3 text-muted">No transactions recorded for this material.</div>
         ) : (
-          <div className="table-responsive">
-            <table className="table table-sm mb-0">
-              <thead className="table-light">
-                <tr>
-                  <th>Date</th>
-                  <th>Type</th>
-                  <th className="text-end">Qty</th>
-                  <th>Notes</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map(tx => (
-                  <tr key={tx.id}>
-                    <td>{formatDate(tx.createdAt)}</td>
-                    <td><span className="badge bg-secondary">{tx.transactionType}</span></td>
-                    <td className={`text-end fw-semibold ${tx.quantity < 0 ? 'text-danger' : 'text-success'}`}>
-                      {tx.quantity > 0 ? '+' : ''}{tx.quantity} {tx.unit}
-                    </td>
-                    <td className="text-muted small">{tx.notes || '—'}</td>
+          <DataGrid
+            items={transactions}
+            tableClassName="table table-sm mb-0"
+            empty={<div className="p-3 text-muted">No transactions recorded for this material.</div>}
+          >
+            {pageItems => (
+              <>
+                <thead className="table-light">
+                  <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th className="text-end">Qty</th>
+                    <th>Notes</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {pageItems.map(tx => (
+                    <tr key={tx.id}>
+                      <td>{formatDate(tx.createdAt)}</td>
+                      <td><span className="badge bg-secondary">{tx.transactionType}</span></td>
+                      <td className={`text-end fw-semibold ${tx.quantity < 0 ? 'text-danger' : 'text-success'}`}>
+                        {tx.quantity > 0 ? '+' : ''}{tx.quantity} {tx.unit}
+                      </td>
+                      <td className="text-muted small">{tx.notes || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </DataGrid>
         )}
       </div>
     </div>
@@ -199,7 +242,9 @@ export default function MaterialList() {
   const [txLoading, setTxLoading] = useState(false)
   const { toasts, showToast } = useToast()
   const { role } = useAuth()
-  const isWorker = role === 'worker'
+  const isWorker = roleIsWorker(role)
+  const canCreate = canWriteOps(role)
+  const canImport = canWriteMaster(role)
 
   const load = async () => {
     try {
@@ -219,13 +264,19 @@ export default function MaterialList() {
 
   useEffect(() => {
     load()
-    if (!isWorker) supplierService.getAll().then(setSuppliers).catch(() => {})
+    supplierService.getAll().then(setSuppliers).catch(() => {})
   }, [])
 
   const filtered = materials.filter(m => {
     const q = search.toLowerCase()
     return m.name.toLowerCase().includes(q) || m.category.toLowerCase().includes(q)
   })
+
+  const lowStockCount = materials.filter(m => (stocks[m.id] ?? 0) < m.minimumStock).length
+  const totalStockValue = materials.reduce(
+    (sum, m) => sum + (stocks[m.id] ?? 0) * m.costPerUnit,
+    0,
+  )
 
 
   const uploadPhotos = async (id: string, files: File[], existing: string[] = []): Promise<string[]> => {
@@ -249,6 +300,8 @@ export default function MaterialList() {
         costPerUnit: parseFloat(data.costPerUnit) || 0,
         supplierId: data.supplierId,
         notes: data.notes,
+        gstRate: parseFloat(data.gstRate) || 0,
+        hsnSac: data.hsnSac,
         status: 'active',
       })
       if (photos.length) await materialService.update(id, { photoUrls: await uploadPhotos(id, photos) })
@@ -276,6 +329,8 @@ export default function MaterialList() {
         costPerUnit: parseFloat(data.costPerUnit) || 0,
         supplierId: data.supplierId,
         notes: data.notes,
+        gstRate: parseFloat(data.gstRate) || 0,
+        hsnSac: data.hsnSac,
         photoUrls,
       })
       showToast('Material updated')
@@ -337,96 +392,144 @@ export default function MaterialList() {
   const showModal = showForm || editMaterial !== null
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <h4 className="mb-0">Materials</h4>
-        <div className="d-flex gap-2">
-          {!isWorker && <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>}
-          <button className="btn btn-primary btn-sm" onClick={openAdd}>+ Add Material</button>
+      <PageHeader
+        title="Materials"
+        subtitle="Stock levels update as purchases and production are logged"
+        icon="📦"
+        actions={
+          <>
+            {!isWorker && <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>}
+            {canImport && <Link to="/import?type=materials" className="btn btn-outline-secondary btn-sm">Import</Link>}
+            {canCreate && (
+              <button className="btn btn-primary btn-sm" onClick={openAdd}>+ Add Material</button>
+            )}
+          </>
+        }
+      />
+
+      <div className="row g-3 mb-3">
+        <div className="col-6 col-lg-4">
+          <StatCard label="Materials tracked" value={materials.length} icon="📦" tone="violet" />
         </div>
+        <div className="col-6 col-lg-4">
+          <StatCard
+            label="Below minimum"
+            value={lowStockCount}
+            icon="⚠️"
+            tone="coral"
+            alert={lowStockCount > 0}
+          />
+        </div>
+        {!isWorker && (
+          <div className="col-12 col-lg-4">
+            <StatCard
+              label="Stock value"
+              value={formatCurrency(totalStockValue)}
+              icon="💰"
+              tone="amber"
+            />
+          </div>
+        )}
       </div>
 
-      <div className="mb-3">
-        <input
-          className="form-control"
-          placeholder="Search by name or category…"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-        />
-      </div>
+      <div className="card">
+        <div className="card-body pb-3">
+          <input
+            className="form-control"
+            placeholder="Search by name or category…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+          />
+        </div>
 
       {loading ? (
         <LoadingSpinner />
-      ) : filtered.length === 0 ? (
-        <EmptyState message={search ? 'No materials match your search.' : 'No materials yet. Add your first material!'} />
       ) : (
-        <div className="table-responsive">
-          <table className="table table-hover align-middle">
-            <thead className="table-light">
-              <tr>
-                <th>Material</th>
-                <th>Category</th>
-                <th className="text-end">Current Stock</th>
-                <th>Unit</th>
-                <th className="text-end">Min Stock</th>
-                {!isWorker && <th className="text-end">Cost/Unit (₹)</th>}
-                {!isWorker && <th className="text-end">Stock Value (₹)</th>}
-                <th>Status</th>
-                {!isWorker && <th>Actions</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map(m => {
-                const currentStock = stocks[m.id] ?? 0
-                const isLow = currentStock < m.minimumStock
-                const stockValue = currentStock * m.costPerUnit
-                const isSelected = selectedMaterial?.id === m.id
-                return (
-                  <tr
-                    key={m.id}
-                    className={`${isLow ? 'table-warning' : ''} ${isSelected ? 'table-active' : ''}`}
-                    style={{ cursor: 'pointer' }}
-                    onClick={() => handleRowClick(m)}
-                  >
-                    <td className="fw-semibold">{m.name}</td>
-                    <td>{m.category || '—'}</td>
-                    <td className="text-end">{currentStock}</td>
-                    <td>{m.unit}</td>
-                    <td className="text-end">{m.minimumStock}</td>
-                    {!isWorker && <td className="text-end">{formatCurrency(m.costPerUnit)}</td>}
-                    {!isWorker && <td className="text-end">{formatCurrency(stockValue)}</td>}
-                    <td>
-                      <span className={`badge bg-${m.status === 'active' ? 'success' : 'secondary'}`}>
-                        {m.status}
-                      </span>
-                    </td>
-                    {!isWorker && (
-                      <td>
-                        <div className="d-flex gap-2">
-                          <button
-                            className="btn btn-sm btn-outline-primary"
-                            onClick={e => openEdit(m, e)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            className={`btn btn-sm btn-outline-${m.status === 'active' ? 'warning' : 'success'}`}
-                            onClick={e => { e.stopPropagation(); setConfirmToggle(m) }}
-                          >
-                            {m.status === 'active' ? 'Deactivate' : 'Activate'}
-                          </button>
-                        </div>
+        <DataGrid
+          items={filtered}
+          resetKey={search}
+          empty={
+            <EmptyState
+              icon="📦"
+              message={search ? 'No materials match your search' : 'No materials yet'}
+              description={
+                search
+                  ? 'Try a different name or category.'
+                  : 'Add your first material to start tracking stock.'
+              }
+            />
+          }
+        >
+          {pageItems => (
+            <>
+              <thead>
+                <tr>
+                  <th>Material</th>
+                  <th>Category</th>
+                  <th className="text-end">Current Stock</th>
+                  <th>Unit</th>
+                  <th className="text-end">Min Stock</th>
+                  {!isWorker && <th className="text-end">Cost/Unit (₹)</th>}
+                  {!isWorker && <th className="text-end">Stock Value (₹)</th>}
+                  <th>Status</th>
+                  {!isWorker && <th>Actions</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {pageItems.map(m => {
+                  const currentStock = stocks[m.id] ?? 0
+                  const isLow = currentStock < m.minimumStock
+                  const stockValue = currentStock * m.costPerUnit
+                  const isSelected = selectedMaterial?.id === m.id
+                  return (
+                    <tr
+                      key={m.id}
+                      className={`${isLow ? 'table-warning' : ''} ${isSelected ? 'table-active' : ''}`}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => handleRowClick(m)}
+                    >
+                      <td className="fw-semibold">
+                        <Link to={`/materials/${m.id}`} onClick={e => e.stopPropagation()}>{m.name}</Link>
                       </td>
-                    )}
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+                      <td>{m.category || '—'}</td>
+                      <td className="text-end">{currentStock}</td>
+                      <td>{m.unit}</td>
+                      <td className="text-end">{m.minimumStock}</td>
+                      {!isWorker && <td className="text-end">{formatCurrency(m.costPerUnit)}</td>}
+                      {!isWorker && <td className="text-end">{formatCurrency(stockValue)}</td>}
+                      <td>
+                        <StatusBadge status={m.status} />
+                      </td>
+                      {!isWorker && (
+                        <td>
+                          <div className="d-flex gap-2">
+                            <button
+                              className="btn btn-sm btn-outline-primary"
+                              onClick={e => openEdit(m, e)}
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className={`btn btn-sm btn-outline-${m.status === 'active' ? 'warning' : 'success'}`}
+                              onClick={e => { e.stopPropagation(); setConfirmToggle(m) }}
+                            >
+                              {m.status === 'active' ? 'Deactivate' : 'Activate'}
+                            </button>
+                          </div>
+                        </td>
+                      )}
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </>
+          )}
+        </DataGrid>
       )}
+      </div>
 
       {selectedMaterial && (
         <TransactionHistoryPanel
@@ -454,6 +557,7 @@ export default function MaterialList() {
                   onCancel={closeModal}
                   saving={saving}
                   isWorker={isWorker}
+                  onSuppliersChange={setSuppliers}
                 />
               </div>
             </div>

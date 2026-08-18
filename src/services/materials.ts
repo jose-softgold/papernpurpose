@@ -1,12 +1,13 @@
 import { collection, doc, getDocs, getDoc, addDoc, updateDoc, query, orderBy, serverTimestamp } from 'firebase/firestore'
 import { db } from '../firebase/config'
 import { Material } from '../types'
+import { auditService } from './audit'
 
 const col = collection(db, 'materials')
 
 export const materialService = {
   async getAll(): Promise<Material[]> {
-    const q = query(col, orderBy('name'))
+    const q = query(col, orderBy('createdAt', 'desc'))
     const snap = await getDocs(q)
     return snap.docs.map(d => ({ id: d.id, ...d.data() } as Material))
   },
@@ -19,6 +20,12 @@ export const materialService = {
 
   async create(data: Omit<Material, 'id' | 'createdAt' | 'updatedAt'>): Promise<string> {
     const ref = await addDoc(col, { ...data, status: 'active', createdAt: serverTimestamp(), updatedAt: serverTimestamp() })
+    await auditService.log({
+      action: 'material.create',
+      entityType: 'material',
+      entityId: ref.id,
+      after: { name: data.name },
+    })
     return ref.id
   },
 

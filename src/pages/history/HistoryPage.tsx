@@ -1,11 +1,14 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Material, Product, InventoryTransaction, TransactionType } from '../../types'
+import { Material, Product, InventoryTransaction, TransactionType, AuditLog } from '../../types'
 import { inventoryService } from '../../services/inventory'
 import { materialService } from '../../services/materials'
 import { productService } from '../../services/products'
+import { auditService } from '../../services/audit'
 import { formatDate } from '../../utils/format'
 import { exportToCSV } from '../../utils/export'
 import LoadingSpinner from '../../components/LoadingSpinner'
+import PageHeader from '../../components/PageHeader'
+import DataGrid from '../../components/DataGrid'
 
 const ALL_TYPES: TransactionType[] = [
   'PURCHASE', 'PRODUCTION', 'CONSUMPTION', 'SALE', 'WASTE', 'ADJUSTMENT', 'RETURN', 'TRANSFORMATION',
@@ -23,8 +26,10 @@ const TYPE_BADGE: Record<string, string> = {
 }
 
 export default function HistoryPage() {
+  const [tab, setTab] = useState<'stock' | 'audit'>('stock')
   const [loading, setLoading] = useState(true)
   const [transactions, setTransactions] = useState<InventoryTransaction[]>([])
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
   const [materials, setMaterials] = useState<Material[]>([])
   const [products, setProducts] = useState<Product[]>([])
 
@@ -38,10 +43,12 @@ export default function HistoryPage() {
       inventoryService.getTransactions(),
       materialService.getAll(),
       productService.getAll(),
-    ]).then(([txs, mats, prods]) => {
+      auditService.getAll().catch(() => [] as AuditLog[]),
+    ]).then(([txs, mats, prods, logs]) => {
       setTransactions(txs)
       setMaterials(mats)
       setProducts(prods)
+      setAuditLogs(logs)
     }).finally(() => setLoading(false))
   }, [])
 
@@ -119,12 +126,61 @@ export default function HistoryPage() {
 
   return (
     <div>
-      <div className="d-flex align-items-center justify-content-between mb-3">
-        <h4 className="mb-0">Transaction History</h4>
-        <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>
-          Export CSV
-        </button>
-      </div>
+      <PageHeader
+        title="History"
+        subtitle="Stock movements and who changed what"
+        icon="📜"
+        actions={
+          <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>
+            Export CSV
+          </button>
+        }
+      />
+
+      <ul className="nav nav-tabs mb-3">
+        <li className="nav-item">
+          <button className={`nav-link${tab === 'stock' ? ' active' : ''}`} onClick={() => setTab('stock')}>Stock</button>
+        </li>
+        <li className="nav-item">
+          <button className={`nav-link${tab === 'audit' ? ' active' : ''}`} onClick={() => setTab('audit')}>Audit</button>
+        </li>
+      </ul>
+
+      {tab === 'audit' ? (
+        <div className="card">
+          <DataGrid
+            items={auditLogs}
+            tableClassName="table table-sm table-hover align-middle mb-0"
+            empty={<p className="text-muted text-center py-4 mb-0">No audit events yet.</p>}
+          >
+            {pageItems => (
+              <>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Who</th>
+                    <th>Action</th>
+                    <th>Entity</th>
+                    <th>Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageItems.map(log => (
+                    <tr key={log.id}>
+                      <td>{formatDate(log.createdAt)}</td>
+                      <td>{log.actorName}</td>
+                      <td><span className="badge bg-secondary">{log.action}</span></td>
+                      <td className="small">{log.entityType}/{log.entityId.slice(0, 8)}</td>
+                      <td className="small text-muted">{log.after ? JSON.stringify(log.after) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </DataGrid>
+        </div>
+      ) : (
+      <>
 
       {/* Filters */}
       <div className="card mb-3">
@@ -178,50 +234,56 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      <div className="table-responsive">
-        <table className="table table-sm table-hover align-middle">
-          <thead className="table-light">
-            <tr>
-              <th>Date</th>
-              <th>Type</th>
-              <th>Item Name</th>
-              <th>Qty</th>
-              <th>Reference</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(tx => {
-              const name = getItemName(tx)
-              const ref = getReference(tx)
-              const isPos = tx.quantity >= 0
-              return (
-                <tr key={tx.id}>
-                  <td>{formatDate(tx.createdAt)}</td>
-                  <td>
-                    <span className={`badge bg-${TYPE_BADGE[tx.transactionType] ?? 'secondary'} text-${TYPE_BADGE[tx.transactionType] === 'light' ? 'dark' : 'white'}`}>
-                      {tx.transactionType}
-                    </span>
-                  </td>
-                  <td>{name}</td>
-                  <td>
-                    <span style={{ color: isPos ? 'green' : 'red', fontWeight: 500 }}>
-                      {isPos ? `+${tx.quantity}` : `${tx.quantity}`} {tx.unit}
-                    </span>
-                  </td>
-                  <td className="text-muted small">{ref}</td>
-                  <td className="text-muted">{tx.notes || '—'}</td>
+      <div className="card">
+        <DataGrid
+          items={filtered}
+          resetKey={`${dateFrom}|${dateTo}|${itemSearch}|${Array.from(selectedTypes).sort().join(',')}`}
+          tableClassName="table table-sm table-hover align-middle mb-0"
+          empty={<p className="text-muted text-center py-4 mb-0">No transactions match the current filters.</p>}
+        >
+          {pageItems => (
+            <>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Type</th>
+                  <th>Item Name</th>
+                  <th>Qty</th>
+                  <th>Reference</th>
+                  <th>Notes</th>
                 </tr>
-              )
-            })}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={6} className="text-center text-muted py-4">No transactions match the current filters.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {pageItems.map(tx => {
+                  const name = getItemName(tx)
+                  const ref = getReference(tx)
+                  const isPos = tx.quantity >= 0
+                  return (
+                    <tr key={tx.id}>
+                      <td>{formatDate(tx.createdAt)}</td>
+                      <td>
+                        <span className={`badge bg-${TYPE_BADGE[tx.transactionType] ?? 'secondary'} text-${TYPE_BADGE[tx.transactionType] === 'light' ? 'dark' : 'white'}`}>
+                          {tx.transactionType}
+                        </span>
+                      </td>
+                      <td>{name}</td>
+                      <td>
+                        <span className={`fw-semibold ${isPos ? 'text-success' : 'text-danger'}`}>
+                          {isPos ? `+${tx.quantity}` : `${tx.quantity}`} {tx.unit}
+                        </span>
+                      </td>
+                      <td className="text-muted small">{ref}</td>
+                      <td className="text-muted">{tx.notes || '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </>
+          )}
+        </DataGrid>
       </div>
+      </>
+      )}
     </div>
   )
 }

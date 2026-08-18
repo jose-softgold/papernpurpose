@@ -10,6 +10,8 @@ import { formatCurrency, formatPercent } from '../../utils/format'
 import { exportToCSV, exportToExcel } from '../../utils/export'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
+import PageHeader from '../../components/PageHeader'
+import DataGrid from '../../components/DataGrid'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 
@@ -132,37 +134,41 @@ function SalesTab() {
         <EmptyState message="No sales data for the selected period." />
       ) : (
         <>
-          <div className="table-responsive">
-            <table className="table table-sm table-hover">
-              <thead className="table-light">
-                <tr>
-                  <th>Date</th>
-                  <th>Customer</th>
-                  <th>Product</th>
-                  <th>Qty</th>
-                  <th>Unit Price (₹)</th>
-                  <th>Revenue (₹)</th>
-                  <th>Cost (₹)</th>
-                  <th>Profit (₹)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i}>
-                    <td>{r.date}</td>
-                    <td>{r.customer}</td>
-                    <td>{r.product}</td>
-                    <td>{r.quantity}</td>
-                    <td>{formatCurrency(r.unitPrice)}</td>
-                    <td>{formatCurrency(r.revenue)}</td>
-                    <td>{formatCurrency(r.cost)}</td>
-                    <td className={r.profit >= 0 ? 'text-success' : 'text-danger'}>
-                      {formatCurrency(r.profit)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="card">
+            <DataGrid items={rows} tableClassName="table table-sm table-hover mb-0">
+              {pageItems => (
+                <>
+                  <thead className="table-light">
+                    <tr>
+                      <th>Date</th>
+                      <th>Customer</th>
+                      <th>Product</th>
+                      <th>Qty</th>
+                      <th>Unit Price (₹)</th>
+                      <th>Revenue (₹)</th>
+                      <th>Cost (₹)</th>
+                      <th>Profit (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageItems.map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.date}</td>
+                        <td>{r.customer}</td>
+                        <td>{r.product}</td>
+                        <td>{r.quantity}</td>
+                        <td>{formatCurrency(r.unitPrice)}</td>
+                        <td>{formatCurrency(r.revenue)}</td>
+                        <td>{formatCurrency(r.cost)}</td>
+                        <td className={r.profit >= 0 ? 'text-success' : 'text-danger'}>
+                          {formatCurrency(r.profit)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </>
+              )}
+            </DataGrid>
           </div>
           <ExportButtons data={exportData} filename="sales-report" show />
         </>
@@ -234,33 +240,37 @@ function ProfitabilityTab() {
               ))}
             </div>
           )}
-          <div className="table-responsive">
-            <table className="table table-sm table-hover">
-              <thead className="table-light">
-                <tr>
-                  <th>Product</th>
-                  <th>Units Sold</th>
-                  <th>Revenue (₹)</th>
-                  <th>Cost (₹)</th>
-                  <th>Profit (₹)</th>
-                  <th>Margin (%)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(r => (
-                  <tr key={r.productId}>
-                    <td>{r.product}</td>
-                    <td>{r.unitsSold}</td>
-                    <td>{formatCurrency(r.revenue)}</td>
-                    <td>{formatCurrency(r.cost)}</td>
-                    <td className={r.profit >= 0 ? 'text-success' : 'text-danger'}>
-                      {formatCurrency(r.profit)}
-                    </td>
-                    <td>{formatPercent(r.margin)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="card">
+            <DataGrid items={rows} tableClassName="table table-sm table-hover mb-0">
+              {pageItems => (
+                <>
+                  <thead className="table-light">
+                    <tr>
+                      <th>Product</th>
+                      <th>Units Sold</th>
+                      <th>Revenue (₹)</th>
+                      <th>Cost (₹)</th>
+                      <th>Profit (₹)</th>
+                      <th>Margin (%)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageItems.map(r => (
+                      <tr key={r.productId}>
+                        <td>{r.product}</td>
+                        <td>{r.unitsSold}</td>
+                        <td>{formatCurrency(r.revenue)}</td>
+                        <td>{formatCurrency(r.cost)}</td>
+                        <td className={r.profit >= 0 ? 'text-success' : 'text-danger'}>
+                          {formatCurrency(r.profit)}
+                        </td>
+                        <td>{formatPercent(r.margin)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </>
+              )}
+            </DataGrid>
           </div>
           <ExportButtons data={exportData} filename="product-profitability" show />
         </>
@@ -305,25 +315,29 @@ function CustomerSalesTab() {
         <EmptyState message="No customer sales data for the selected period." />
       ) : (
         <>
-          <div className="table-responsive">
-            <table className="table table-sm table-hover">
-              <thead className="table-light">
-                <tr>
-                  <th>Customer</th>
-                  <th>Orders</th>
-                  <th>Revenue (₹)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(r => (
-                  <tr key={r.customerId}>
-                    <td>{r.customer}</td>
-                    <td>{r.orders}</td>
-                    <td>{formatCurrency(r.revenue)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="card">
+            <DataGrid items={rows} tableClassName="table table-sm table-hover mb-0">
+              {pageItems => (
+                <>
+                  <thead className="table-light">
+                    <tr>
+                      <th>Customer</th>
+                      <th>Orders</th>
+                      <th>Revenue (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageItems.map(r => (
+                      <tr key={r.customerId}>
+                        <td>{r.customer}</td>
+                        <td>{r.orders}</td>
+                        <td>{formatCurrency(r.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </>
+              )}
+            </DataGrid>
           </div>
           <ExportButtons data={exportData} filename="customer-sales" show />
         </>
@@ -371,31 +385,35 @@ function ProductionTab() {
         <EmptyState message="No production data for the selected period." />
       ) : (
         <>
-          <div className="table-responsive">
-            <table className="table table-sm table-hover">
-              <thead className="table-light">
-                <tr>
-                  <th>Date</th>
-                  <th>Product</th>
-                  <th>Version</th>
-                  <th>Qty</th>
-                  <th>Cost/Unit (₹)</th>
-                  <th>Total Cost (₹)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i}>
-                    <td>{r.date}</td>
-                    <td>{r.product}</td>
-                    <td>{r.version}</td>
-                    <td>{r.quantity}</td>
-                    <td>{formatCurrency(r.costPerUnit)}</td>
-                    <td>{formatCurrency(r.totalCost)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="card">
+            <DataGrid items={rows} tableClassName="table table-sm table-hover mb-0">
+              {pageItems => (
+                <>
+                  <thead className="table-light">
+                    <tr>
+                      <th>Date</th>
+                      <th>Product</th>
+                      <th>Version</th>
+                      <th>Qty</th>
+                      <th>Cost/Unit (₹)</th>
+                      <th>Total Cost (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageItems.map((r, i) => (
+                      <tr key={i}>
+                        <td>{r.date}</td>
+                        <td>{r.product}</td>
+                        <td>{r.version}</td>
+                        <td>{r.quantity}</td>
+                        <td>{formatCurrency(r.costPerUnit)}</td>
+                        <td>{formatCurrency(r.totalCost)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </>
+              )}
+            </DataGrid>
           </div>
           <ExportButtons data={exportData} filename="production-report" show />
         </>
@@ -417,7 +435,11 @@ export default function ReportsPage() {
 
   return (
     <div>
-      <h4 className="mb-3">Reports</h4>
+      <PageHeader
+        title="Reports"
+        subtitle="Sales, profitability and production over any date range"
+        icon="📈"
+      />
       <ul className="nav nav-tabs mb-3">
         {tabs.map(t => (
           <li key={t.key} className="nav-item">

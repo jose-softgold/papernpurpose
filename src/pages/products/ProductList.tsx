@@ -7,10 +7,15 @@ import { inventoryService } from '../../services/inventory'
 import { Product, ProductVersion } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
+import PageHeader from '../../components/PageHeader'
+import DataGrid from '../../components/DataGrid'
+import StatusBadge from '../../components/StatusBadge'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { formatCurrency } from '../../utils/format'
 import { exportToCSV } from '../../utils/export'
+import { useAuth } from '../../hooks/useAuth'
+import { canWriteMaster } from '../../utils/roles'
 
 interface ProductRow extends Product {
   activeVersion: ProductVersion | null
@@ -22,6 +27,8 @@ interface AddProductForm {
   category: string
   description: string
   defaultSellingPrice: string
+  gstRate: string
+  hsnSac: string
 }
 
 interface AddVersionForm {
@@ -29,10 +36,12 @@ interface AddVersionForm {
   description: string
 }
 
-const emptyProductForm: AddProductForm = { name: '', category: '', description: '', defaultSellingPrice: '' }
+const emptyProductForm: AddProductForm = { name: '', category: '', description: '', defaultSellingPrice: '', gstRate: '0', hsnSac: '' }
 const emptyVersionForm: AddVersionForm = { version: 'V1', description: '' }
 
 export default function ProductList() {
+  const { role } = useAuth()
+  const canEdit = canWriteMaster(role)
   const [rows, setRows] = useState<ProductRow[]>([])
   const [loading, setLoading] = useState(true)
   const [showAddProduct, setShowAddProduct] = useState(false)
@@ -69,7 +78,7 @@ export default function ProductList() {
   useEffect(() => { load() }, [])
 
   const setProductField = (field: keyof AddProductForm) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
       setProductForm(f => ({ ...f, [field]: e.target.value }))
 
   const setVersionField = (field: keyof AddVersionForm) =>
@@ -85,6 +94,8 @@ export default function ProductList() {
         category: productForm.category.trim(),
         description: productForm.description.trim(),
         defaultSellingPrice: parseFloat(productForm.defaultSellingPrice) || 0,
+        gstRate: parseFloat(productForm.gstRate) || 0,
+        hsnSac: productForm.hsnSac.trim(),
         status: 'active',
         imageUrl: '',
       })
@@ -154,59 +165,72 @@ export default function ProductList() {
   if (loading) return <LoadingSpinner />
 
   return (
-    <div className="container-fluid py-3">
+    <div>
       <ToastContainer toasts={toasts} />
 
-      <div className="d-flex justify-content-between align-items-center mb-3">
-        <h4 className="mb-0">Products</h4>
-        <div className="d-flex gap-2">
-          <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>
-          <button className="btn btn-primary btn-sm" onClick={() => setShowAddProduct(true)}>+ Add Product</button>
-        </div>
-      </div>
+      <PageHeader
+        title="Products"
+        subtitle={`${rows.length} product${rows.length === 1 ? '' : 's'} with versioned recipes`}
+        icon="🎀"
+        actions={
+          <>
+            <button className="btn btn-outline-secondary btn-sm" onClick={handleExport}>Export CSV</button>
+            {canEdit && <Link to="/import?type=products" className="btn btn-outline-secondary btn-sm">Import</Link>}
+            {canEdit && <Link to="/import?type=bom" className="btn btn-outline-secondary btn-sm">Import BOM</Link>}
+            {canEdit && (
+              <button className="btn btn-primary btn-sm" onClick={() => setShowAddProduct(true)}>+ Add Product</button>
+            )}
+          </>
+        }
+      />
 
-      {rows.length === 0 ? (
-        <EmptyState message="No products yet. Add your first product." />
-      ) : (
-        <div className="card">
-          <div className="table-responsive">
-            <table className="table table-hover mb-0">
-              <thead className="table-light">
-                <tr>
-                  <th>Product</th>
-                  <th>Category</th>
-                  <th>Current Version</th>
-                  <th>Stock</th>
-                  <th>Default Price</th>
-                  <th>Status</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(r => (
-                  <tr key={r.id}>
-                    <td>
-                      <Link to={`/products/${r.id}`} className="text-decoration-none fw-semibold">{r.name}</Link>
-                    </td>
-                    <td>{r.category || '—'}</td>
-                    <td>{r.activeVersion?.version ?? <span className="text-muted">None</span>}</td>
-                    <td>{r.stock}</td>
-                    <td>{formatCurrency(r.defaultSellingPrice)}</td>
-                    <td>
-                      <span className={`badge bg-${r.status === 'active' ? 'success' : 'secondary'}`}>
-                        {r.status}
-                      </span>
-                    </td>
-                    <td>
-                      <Link to={`/products/${r.id}`} className="btn btn-outline-primary btn-sm">View</Link>
-                    </td>
+      <div className="card">
+        <DataGrid
+          items={rows}
+          empty={
+            <EmptyState
+              icon="🎀"
+              message="No products yet"
+              description="Add a product, then give it a version with its material recipe."
+            />
+          }
+        >
+            {pageItems => (
+              <>
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th>Category</th>
+                    <th>Current Version</th>
+                    <th>Stock</th>
+                    <th>Default Price</th>
+                    <th>Status</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {pageItems.map(r => (
+                    <tr key={r.id}>
+                      <td>
+                        <Link to={`/products/${r.id}`} className="text-decoration-none fw-semibold">{r.name}</Link>
+                      </td>
+                      <td>{r.category || '—'}</td>
+                      <td>{r.activeVersion?.version ?? <span className="text-muted">None</span>}</td>
+                      <td>{r.stock}</td>
+                      <td>{formatCurrency(r.defaultSellingPrice)}</td>
+                      <td>
+                        <StatusBadge status={r.status} />
+                      </td>
+                      <td>
+                        <Link to={`/products/${r.id}`} className="btn btn-outline-primary btn-sm">View</Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </DataGrid>
         </div>
-      )}
 
       {/* Add Product Modal */}
       {showAddProduct && (
@@ -236,6 +260,16 @@ export default function ProductList() {
                     <div className="mb-3">
                       <label className="form-label">Default Selling Price (₹)</label>
                       <input className="form-control" type="number" min="0" step="0.01" value={productForm.defaultSellingPrice} onChange={setProductField('defaultSellingPrice')} />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">GST rate</label>
+                      <select className="form-select" value={productForm.gstRate} onChange={setProductField('gstRate')}>
+                        {[0, 5, 12, 18, 28].map(r => <option key={r} value={r}>{r}%</option>)}
+                      </select>
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">HSN / SAC</label>
+                      <input className="form-control" value={productForm.hsnSac} onChange={setProductField('hsnSac')} />
                     </div>
                     <div className="mb-3">
                       <label className="form-label">Photos</label>

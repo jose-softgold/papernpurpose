@@ -6,8 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:functions": "npm --prefix functions run build",
+    "emulators": "firebase emulators:start --project demo-project",
+    "emulators:persist": "firebase emulators:start --project demo-project --import=./emulator-data --export-on-exit=./emulator-data",
     "lint": "eslint .",
     "preview": "vite preview",
+    "rules:check": "node scripts/rules-check.mjs",
     "seed": "FIRESTORE_EMULATOR_HOST=localhost:8180 FIREBASE_AUTH_EMULATOR_HOST=localhost:9099 ts-node --project scripts/tsconfig.json scripts/seed.ts"
   },
   "dependencies": {
@@ -19,11 +23,13 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
     "@types/node": "^22.20.1",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "firebase-admin": "^14.2.0",
+    "firebase-tools": "^15.27.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.5.3",
     "vite": "^5.4.2"

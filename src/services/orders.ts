@@ -1,11 +1,35 @@
 import {
-  collection, doc, getDocs, getDoc, query, where, orderBy, serverTimestamp, writeBatch, updateDoc, Timestamp
+  collection, doc, getDocs, getDoc, query, where, orderBy, serverTimestamp, writeBatch, updateDoc, Timestamp,
 } from 'firebase/firestore'
-import { db } from '../firebase/config'
+import { db, auth } from '../firebase/config'
 import { Order, OrderItem, OrderStatus } from '../types'
+import { lineTax, roundMoney } from '../utils/tax'
+import { auditService } from './audit'
+
+function actorId() {
+  return auth.currentUser?.uid ?? ''
+}
+
+function sortByOrderDateDesc(orders: Order[]): Order[] {
+  return [...orders].sort((a, b) => (b.orderDate?.toMillis?.() ?? 0) - (a.orderDate?.toMillis?.() ?? 0))
+}
+
+const WORKER_READ_STATUSES: OrderStatus[] = [
+  'CONFIRMED', 'IN_PRODUCTION', 'READY', 'DISPATCHED', 'DELIVERED', 'COMPLETED',
+]
 
 export const orderService = {
-  async getAll(statuses?: OrderStatus[]): Promise<Order[]> {
+  async getAll(statuses?: OrderStatus[], assignedToUid?: string): Promise<Order[]> {
+    if (assignedToUid) {
+      const statusFilter = statuses?.length ? statuses : WORKER_READ_STATUSES
+      const q = query(
+        collection(db, 'orders'),
+        where('assignedWorkerIds', 'array-contains', assignedToUid),
+        where('status', 'in', statusFilter),
+      )
+      const snap = await getDocs(q)
+      return sortByOrderDateDesc(snap.docs.map(d => ({ id: d.id, ...d.data() } as Order)))
+    }
     const q = statuses?.length
       ? query(collection(db, 'orders'), where('status', 'in', statuses), orderBy('orderDate', 'desc'))
       : query(collection(db, 'orders'), orderBy('orderDate', 'desc'))
@@ -36,6 +60,43 @@ export const orderService = {
       .filter(i => i.orderId === orderId)
   },
 
+  /** Line items keyed by order id. Used to label and auto-fill production from a linked order. */
+  async getItemsForOrders(orderIds: string[]): Promise<Record<string, OrderItem[]>> {
+    const unique = [...new Set(orderIds.filter(Boolean))]
+    const map: Record<string, OrderItem[]> = {}
+    unique.forEach(id => { map[id] = [] })
+    if (!unique.length) return map
+
+    const chunks: string[][] = []
+    for (let i = 0; i < unique.length; i += 30) chunks.push(unique.slice(i, i + 30))
+    const snaps = await Promise.all(
+      chunks.map(chunk => getDocs(query(collection(db, 'orderItems'), where('orderId', 'in', chunk)))),
+    )
+    snaps.forEach(snap => {
+      snap.docs.forEach(d => {
+        const item = { id: d.id, ...d.data() } as OrderItem
+        ;(map[item.orderId] ??= []).push(item)
+      })
+    })
+    return map
+  },
+
+  /**
+   * Orders that can be linked to a production batch.
+   * Workers must pass their uid so the query is assignment-gated (unassigned docs are not readable).
+   */
+  async listForProductionLink(assignedToUid?: string): Promise<{
+    orders: Order[]
+    itemsByOrderId: Record<string, OrderItem[]>
+  }> {
+    const orders = await orderService.getAll(['CONFIRMED', 'IN_PRODUCTION'], assignedToUid)
+    const visible = assignedToUid
+      ? orders.filter(o => (o.assignedWorkerIds ?? []).includes(assignedToUid))
+      : orders
+    const itemsByOrderId = await orderService.getItemsForOrders(visible.map(o => o.id))
+    return { orders: visible, itemsByOrderId }
+  },
+
   async create(data: {
     customerId: string
     orderDate: Timestamp
@@ -43,17 +104,25 @@ export const orderService = {
     eventType: string
     discount: number
     notes: string
+    assignedWorkerIds?: string[]
+    assignedWorkerNames?: string[]
+    assignedBy?: string
     items: Array<{
       productId: string
       productVersionId: string
       quantity: number
       unitPrice: number
       costPerUnit: number
+      gstRate?: number
     }>
   }): Promise<string> {
     const batch = writeBatch(db)
-    const subtotal = data.items.reduce((s, i) => s + i.quantity * i.unitPrice, 0)
-    const total = subtotal - data.discount
+    const taxLines = data.items.map(i => lineTax(i.quantity, i.unitPrice, i.gstRate ?? 0))
+    const taxableSubtotal = roundMoney(taxLines.reduce((s, l) => s + l.taxableAmount, 0))
+    const gstTotal = roundMoney(taxLines.reduce((s, l) => s + l.gstAmount, 0))
+    const subtotal = taxableSubtotal
+    const grandTotal = roundMoney(taxableSubtotal + gstTotal - data.discount)
+    const total = grandTotal
 
     const orderRef = doc(collection(db, 'orders'))
     batch.set(orderRef, {
@@ -64,14 +133,23 @@ export const orderService = {
       subtotal,
       discount: data.discount,
       total,
+      taxableSubtotal,
+      gstTotal,
+      grandTotal,
       status: 'CONFIRMED' as OrderStatus,
       notes: data.notes,
+      assignedWorkerIds: data.assignedWorkerIds ?? [],
+      assignedWorkerNames: data.assignedWorkerNames ?? [],
+      assignedAt: data.assignedWorkerIds?.length ? serverTimestamp() : null,
+      assignedBy: data.assignedBy ?? '',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
+      'statusHistory.CONFIRMED': serverTimestamp(),
     })
 
-    for (const item of data.items) {
-      const totalPrice = item.quantity * item.unitPrice
+    data.items.forEach((item, idx) => {
+      const tax = taxLines[idx]
+      const totalPrice = tax.lineTotal
       const totalCost = item.quantity * item.costPerUnit
       const itemRef = doc(collection(db, 'orderItems'))
       batch.set(itemRef, {
@@ -84,10 +162,19 @@ export const orderService = {
         costPerUnit: item.costPerUnit,
         totalCost,
         profit: totalPrice - totalCost,
+        gstRate: item.gstRate ?? 0,
+        taxableAmount: tax.taxableAmount,
+        gstAmount: tax.gstAmount,
       })
-    }
+    })
 
     await batch.commit()
+    await auditService.log({
+      action: 'order.create',
+      entityType: 'order',
+      entityId: orderRef.id,
+      after: { customerId: data.customerId, grandTotal, itemCount: data.items.length },
+    })
     return orderRef.id
   },
 
@@ -101,6 +188,7 @@ export const orderService = {
 
     if (status === 'COMPLETED') {
       const items = await orderService.getItems(id)
+      const createdBy = actorId()
       for (const item of items) {
         const txRef = doc(collection(db, 'inventoryTransactions'))
         batch.set(txRef, {
@@ -113,11 +201,18 @@ export const orderService = {
           referenceId: id,
           notes: `Sale order ${id}`,
           createdAt: serverTimestamp(),
+          createdBy,
         })
       }
     }
 
     await batch.commit()
+    await auditService.log({
+      action: 'order.status',
+      entityType: 'order',
+      entityId: id,
+      after: { status },
+    })
   },
 
   async cancel(id: string): Promise<void> {
@@ -128,6 +223,27 @@ export const orderService = {
       'statusHistory.CANCELLED': serverTimestamp(),
     })
     await batch.commit()
+    await auditService.log({
+      action: 'order.cancel',
+      entityType: 'order',
+      entityId: id,
+    })
+  },
+
+  async assign(id: string, workerIds: string[], workerNames: string[], assignedBy: string): Promise<void> {
+    await updateDoc(doc(db, 'orders', id), {
+      assignedWorkerIds: workerIds,
+      assignedWorkerNames: workerNames,
+      assignedAt: serverTimestamp(),
+      assignedBy,
+      updatedAt: serverTimestamp(),
+    })
+    await auditService.log({
+      action: 'order.assign',
+      entityType: 'order',
+      entityId: id,
+      after: { assignedWorkerIds: workerIds, assignedWorkerNames: workerNames },
+    })
   },
 
   async updateShipment(id: string, data: {
