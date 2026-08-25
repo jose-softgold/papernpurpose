@@ -71,6 +71,7 @@ export const productionService = {
     notes: string
     orderId?: string | null
     batchCode?: string
+    occasionSeasonId?: string | null
     assignedWorkerIds?: string[]
     assignedWorkerNames?: string[]
     assignedBy?: string
@@ -94,6 +95,7 @@ export const productionService = {
       wasteQuantity: 0,
       batchCode,
       orderId: params.orderId ?? null,
+      occasionSeasonId: params.occasionSeasonId ?? null,
       productionDate: params.productionDate,
       totalMaterialCost: plannedCost,
       costPerUnit: expected ? plannedCost / expected : 0,
@@ -141,6 +143,7 @@ export const productionService = {
     notes: string
     orderId?: string | null
     batchCode?: string
+    occasionSeasonId?: string | null
     assignedWorkerIds?: string[]
     assignedWorkerNames?: string[]
     assignedBy?: string
@@ -180,6 +183,7 @@ export const productionService = {
       wasteQuantity: wasteFg,
       batchCode,
       orderId: params.orderId ?? null,
+      occasionSeasonId: params.occasionSeasonId ?? null,
       productionDate: params.productionDate,
       totalMaterialCost,
       costPerUnit,
@@ -265,6 +269,7 @@ export const productionService = {
       referenceType: 'production',
       referenceId: prodRef.id,
       notes: `Batch ${batchCode}`,
+      occasionSeasonId: params.occasionSeasonId ?? null,
       createdAt: serverTimestamp(),
       createdBy,
     })

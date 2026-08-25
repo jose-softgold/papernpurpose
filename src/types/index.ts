@@ -40,6 +40,34 @@ export interface Customer {
   updatedAt: Timestamp
 }
 
+export type OccasionKind = 'festival' | 'national' | 'personal' | 'other'
+export type OccasionStatus = 'active' | 'inactive'
+export type OccasionSeasonStatus = 'upcoming' | 'active' | 'closed'
+
+export interface Occasion {
+  id: string
+  name: string
+  slug: string
+  kind: OccasionKind
+  typicalMonth?: number | null
+  typicalDay?: number | null
+  status: OccasionStatus
+  createdAt: Timestamp
+  updatedAt: Timestamp
+}
+
+export interface OccasionSeason {
+  id: string
+  occasionId: string
+  year: number
+  name: string
+  startsAt?: Timestamp | null
+  endsAt?: Timestamp | null
+  status: OccasionSeasonStatus
+  createdAt: Timestamp
+  updatedAt: Timestamp
+}
+
 export interface Product {
   id: string
   name: string
@@ -53,6 +81,7 @@ export interface Product {
   packagingPhotoUrls?: string[]
   gstRate?: number
   hsnSac?: string
+  occasionIds?: string[]
   createdAt: Timestamp
   updatedAt: Timestamp
 }
@@ -112,6 +141,8 @@ export interface InventoryTransaction {
   referenceType: string
   referenceId: string
   notes: string
+  /** Finished-goods season pile; null = unassigned / legacy stock */
+  occasionSeasonId?: string | null
   createdAt: Timestamp
   createdBy?: string
 }
@@ -132,6 +163,8 @@ export interface Shipment {
   trackingId?: string
   cost?: number
   photoUrls?: string[]
+  /** Linked bank debit when logistics was tagged from Bank */
+  bankTransactionId?: string | null
   updatedAt?: Timestamp
 }
 
@@ -141,6 +174,8 @@ export interface Order {
   orderDate: Timestamp
   eventDate: Timestamp | null
   eventType: string
+  /** Catalog occasion; legacy orders may omit */
+  occasionId?: string | null
   subtotal: number
   discount: number
   total: number
@@ -173,6 +208,8 @@ export interface OrderItem {
   gstRate?: number
   taxableAmount?: number
   gstAmount?: number
+  /** Which season pile to sell from; null = unassigned stock */
+  occasionSeasonId?: string | null
 }
 
 export type ProductionStatus = 'PLANNED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'
@@ -187,6 +224,7 @@ export interface Production {
   wasteQuantity?: number
   batchCode?: string
   orderId?: string | null
+  occasionSeasonId?: string | null
   productionDate: Timestamp
   totalMaterialCost: number
   costPerUnit: number
@@ -279,4 +317,185 @@ export interface WorkAssignment {
   assignedAt: Timestamp
   unassignedAt?: Timestamp | null
   note?: string
+}
+
+export type BankDirection = 'credit' | 'debit'
+export type BankSource = 'alert' | 'statement' | 'import' | 'manual'
+export type BankTxStatus = 'pending' | 'reviewed' | 'matched' | 'ignored'
+export type BankMatchType = 'order' | 'purchase'
+export type BankBooks = 'unassigned' | 'business' | 'personal'
+/** Customer money in against an order */
+export type BankPaymentKind = 'advance' | 'final'
+/** Business expense kind on a bank row */
+export type BankExpenseKind = 'logistics' | 'recce'
+/** Simplified business tag reasons (Bank Tag modal) */
+export type BankTagReason =
+  | 'customer_payment'
+  | 'logistics'
+  | 'worker'
+  | 'recce'
+  | 'purchase'
+  | 'other'
+  | 'ignore'
+
+export const DEFAULT_BANK_TAGS = [
+  'materials',
+  'shipping',
+  'upi',
+  'gst',
+  'recce',
+  'other',
+] as const
+
+export const DEFAULT_BANK_CATEGORIES = [
+  'advance',
+  'worker-spend',
+  'materials',
+  'shipping',
+  'recce',
+  'salary',
+  'payout',
+  'rent',
+  'groceries',
+  'fuel',
+  'utilities',
+  'health',
+  'entertainment',
+  'transfer',
+  'other',
+] as const
+
+/** @deprecated use DEFAULT_BANK_CATEGORIES */
+export const DEFAULT_PERSONAL_CATEGORIES = DEFAULT_BANK_CATEGORIES
+
+export interface BankTransaction {
+  id: string
+  gmailMessageId: string
+  gmailThreadId: string
+  fingerprint: string
+  source: BankSource
+  occurredAt: Timestamp | null
+  amount: number
+  direction: BankDirection
+  currency: string
+  bankName?: string
+  accountLast4?: string
+  counterparty?: string
+  description: string
+  rawSubject: string
+  snippet: string
+  parseConfidence: number
+  parseNotes?: string
+  status: BankTxStatus
+  books: BankBooks
+  /** @deprecated prefer category */
+  personalCategory?: string | null
+  /** Shared custom category name */
+  category?: string | null
+  workerId?: string | null
+  orderId?: string | null
+  purchaseId?: string | null
+  materialId?: string | null
+  productId?: string | null
+  /** Customer payment against an order */
+  paymentKind?: BankPaymentKind | null
+  /** Logistics / recce expense */
+  expenseKind?: BankExpenseKind | null
+  /** Worker float/payout subtype when tagged as worker */
+  workerPayKind?: 'payout' | 'out' | 'spend' | null
+  tags: string[]
+  matchType?: BankMatchType | null
+  matchId?: string | null
+  createdAt: Timestamp
+  updatedAt: Timestamp
+  reviewedBy?: string
+}
+
+export type WorkerAdvanceKind = 'out' | 'spend'
+
+export interface WorkerAdvanceEntry {
+  id: string
+  workerId: string
+  workerName: string
+  kind: WorkerAdvanceKind
+  amount: number
+  bankTransactionId?: string | null
+  materialId?: string | null
+  orderId?: string | null
+  category?: string | null
+  notes?: string
+  occurredAt: Timestamp
+  createdAt: Timestamp
+  createdBy: string
+}
+
+export interface WorkerAdvanceBalance {
+  workerId: string
+  workerName: string
+  sent: number
+  spent: number
+  remaining: number
+}
+
+/** Business expense buckets for budget tracking (debits only in UI). */
+export type BusinessExpenseBucket = 'logistics' | 'recce' | 'worker' | 'purchase' | 'other'
+
+export const BUSINESS_EXPENSE_BUCKETS: BusinessExpenseBucket[] = [
+  'logistics',
+  'purchase',
+  'worker',
+  'recce',
+  'other',
+]
+
+export const BUSINESS_EXPENSE_BUCKET_LABELS: Record<BusinessExpenseBucket, string> = {
+  logistics: 'Logistics / courier',
+  purchase: 'Purchases / materials',
+  worker: 'Worker pay / float',
+  recce: 'Recce / site visits',
+  other: 'Other business',
+}
+
+export interface ExpenseBudgetsDoc {
+  personal: Record<string, number>
+  business: Record<string, number>
+}
+
+export interface ExpenseBudgetRow {
+  key: string
+  label: string
+  spent: number
+  budget: number
+  remaining: number
+  pct: number
+  overBudget: boolean
+  credits: number
+}
+
+export interface ExpenseSectionTotals {
+  totalBudget: number
+  totalSpent: number
+  remaining: number
+  overBy: number
+  totalCredits: number
+}
+
+/** Safe Gmail connection status returned by callables (never includes tokens). */
+export interface GmailConnectionStatus {
+  connected: boolean
+  email: string | null
+  connectedAt: string | null
+  senderAllowlist: string[]
+  labelId: string | null
+  watchExpiration: string | null
+  lastSyncAt: string | null
+  lastError: string | null
+}
+
+export interface GmailSyncResult {
+  ok: boolean
+  days?: number
+  processed: number
+  written: number
+  skippedDuplicates: number
 }

@@ -70,11 +70,42 @@ async function seed() {
     smith: await db.collection('customers').add({ name: 'John Smith', phone: '9834567890', email: 'smith@example.com', address: '7 Park Lane', city: 'Bangalore', notes: 'Bulk buyer', status: 'active', createdAt: ts(), updatedAt: ts() }).then(r => r.id),
   }
 
+  // Occasions catalog
+  const occasions = {
+    diwali: await db.collection('occasions').add({
+      name: 'Diwali', slug: 'diwali', kind: 'festival', status: 'active',
+      typicalMonth: 10, typicalDay: null, createdAt: ts(), updatedAt: ts(),
+    }).then(r => r.id),
+    independence: await db.collection('occasions').add({
+      name: 'Independence Day', slug: 'independence-day', kind: 'national', status: 'active',
+      typicalMonth: 8, typicalDay: 15, createdAt: ts(), updatedAt: ts(),
+    }).then(r => r.id),
+    newYear: await db.collection('occasions').add({
+      name: 'New Year', slug: 'new-year', kind: 'festival', status: 'active',
+      typicalMonth: 1, typicalDay: 1, createdAt: ts(), updatedAt: ts(),
+    }).then(r => r.id),
+    birthday: await db.collection('occasions').add({
+      name: 'Birthday', slug: 'birthday', kind: 'personal', status: 'active',
+      createdAt: ts(), updatedAt: ts(),
+    }).then(r => r.id),
+  }
+  const seedYear = new Date().getFullYear()
+  const diwaliSeasonId = await db.collection('occasionSeasons').add({
+    occasionId: occasions.diwali,
+    year: seedYear,
+    name: `Diwali ${seedYear}`,
+    status: 'active',
+    startsAt: null,
+    endsAt: null,
+    createdAt: ts(),
+    updatedAt: ts(),
+  }).then(r => r.id)
+
   // Products
-  const roseId      = await db.collection('products').add({ name: 'Large Paper Rose', category: 'Paper Craft', description: 'Handmade large paper rose decoration', defaultSellingPrice: 250, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
-  const bannerId    = await db.collection('products').add({ name: 'Birthday Banner', category: 'Banner', description: 'Custom birthday banner with glitter', defaultSellingPrice: 180, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
-  const butterflyId = await db.collection('products').add({ name: 'Paper Butterfly', category: 'Paper Craft', description: 'Delicate paper butterfly for decoration', defaultSellingPrice: 120, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
-  const partyHatId  = await db.collection('products').add({ name: 'Party Hat', category: 'Paper Craft', description: 'Colorful paper party hat', defaultSellingPrice: 80, status: 'active', imageUrl: '', createdAt: ts(), updatedAt: ts() }).then(r => r.id)
+  const roseId      = await db.collection('products').add({ name: 'Large Paper Rose', category: 'Paper Craft', description: 'Handmade large paper rose decoration', defaultSellingPrice: 250, status: 'active', imageUrl: '', occasionIds: [occasions.diwali, occasions.newYear], createdAt: ts(), updatedAt: ts() }).then(r => r.id)
+  const bannerId    = await db.collection('products').add({ name: 'Birthday Banner', category: 'Banner', description: 'Custom birthday banner with glitter', defaultSellingPrice: 180, status: 'active', imageUrl: '', occasionIds: [occasions.birthday], createdAt: ts(), updatedAt: ts() }).then(r => r.id)
+  const butterflyId = await db.collection('products').add({ name: 'Paper Butterfly', category: 'Paper Craft', description: 'Delicate paper butterfly for decoration', defaultSellingPrice: 120, status: 'active', imageUrl: '', occasionIds: [occasions.diwali], createdAt: ts(), updatedAt: ts() }).then(r => r.id)
+  const partyHatId  = await db.collection('products').add({ name: 'Party Hat', category: 'Paper Craft', description: 'Colorful paper party hat', defaultSellingPrice: 80, status: 'active', imageUrl: '', occasionIds: [occasions.newYear, occasions.birthday], createdAt: ts(), updatedAt: ts() }).then(r => r.id)
 
   // Product Versions
   await db.collection('productVersions').add({ productId: roseId, version: 'V1', description: 'Original design', status: 'inactive', createdAt: ts(), updatedAt: ts() })
@@ -173,6 +204,7 @@ async function seed() {
     transactionType: 'PRODUCTION', quantity: 25, unit: 'units',
     referenceType: 'production', referenceId: prodRef.id,
     notes: 'Completed production of 25 units',
+    occasionSeasonId: diwaliSeasonId,
     createdAt: Timestamp.now(),
   })
 
@@ -181,7 +213,7 @@ async function seed() {
   // Order 1: Priya buys 10 Large Paper Roses V3 @ ₹250 (COMPLETED)
   const order1Ref = await db.collection('orders').add({
     customerId: customers.priya, orderDate: Timestamp.now(),
-    eventDate: null, eventType: 'Birthday',
+    eventDate: null, eventType: 'Birthday', occasionId: occasions.birthday,
     subtotal: 2500, discount: 0, total: 2500,
     status: 'COMPLETED', notes: '',
     createdAt: ts(), updatedAt: ts(),

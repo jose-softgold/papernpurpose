@@ -4,7 +4,8 @@ import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
 import { productService } from '../../services/products'
 import { inventoryService } from '../../services/inventory'
-import { Product, ProductVersion } from '../../types'
+import { occasionService } from '../../services/occasions'
+import { Product, ProductVersion, Occasion } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
@@ -43,6 +44,8 @@ export default function ProductList() {
   const { role } = useAuth()
   const canEdit = canWriteMaster(role)
   const [rows, setRows] = useState<ProductRow[]>([])
+  const [occasions, setOccasions] = useState<Occasion[]>([])
+  const [occasionFilter, setOccasionFilter] = useState<string>('all')
   const [loading, setLoading] = useState(true)
   const [showAddProduct, setShowAddProduct] = useState(false)
   const [showAddVersion, setShowAddVersion] = useState(false)
@@ -57,10 +60,12 @@ export default function ProductList() {
   const load = async () => {
     setLoading(true)
     try {
-      const [products, stocks] = await Promise.all([
+      const [products, stocks, allOccasions] = await Promise.all([
         productService.getAll(),
         inventoryService.getProductStocks(),
+        occasionService.getActiveOccasions(),
       ])
+      setOccasions(allOccasions)
       // fetch active versions in parallel
       const activeVersions = await Promise.all(products.map(p => productService.getActiveVersion(p.id)))
       setRows(products.map((p, i) => ({
@@ -162,6 +167,12 @@ export default function ProductList() {
     exportToCSV(data as unknown as Record<string, unknown>[], 'products')
   }
 
+  const occasionMap = Object.fromEntries(occasions.map(o => [o.id, o.name]))
+
+  const filteredRows = occasionFilter === 'all'
+    ? rows
+    : rows.filter(r => (r.occasionIds ?? []).includes(occasionFilter))
+
   if (loading) return <LoadingSpinner />
 
   return (
@@ -170,7 +181,7 @@ export default function ProductList() {
 
       <PageHeader
         title="Products"
-        subtitle={`${rows.length} product${rows.length === 1 ? '' : 's'} with versioned recipes`}
+        subtitle={`${filteredRows.length} product${filteredRows.length === 1 ? '' : 's'} with versioned recipes`}
         icon="🎀"
         actions={
           <>
@@ -184,9 +195,31 @@ export default function ProductList() {
         }
       />
 
+      {occasions.length > 0 && (
+        <div className="d-flex flex-wrap gap-2 mb-3">
+          <button
+            type="button"
+            className={`btn btn-sm ${occasionFilter === 'all' ? 'btn-primary' : 'btn-outline-secondary'}`}
+            onClick={() => setOccasionFilter('all')}
+          >
+            All
+          </button>
+          {occasions.map(o => (
+            <button
+              key={o.id}
+              type="button"
+              className={`btn btn-sm ${occasionFilter === o.id ? 'btn-primary' : 'btn-outline-secondary'}`}
+              onClick={() => setOccasionFilter(o.id)}
+            >
+              {o.name}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="card">
         <DataGrid
-          items={rows}
+          items={filteredRows}
           empty={
             <EmptyState
               icon="🎀"
@@ -201,6 +234,7 @@ export default function ProductList() {
                   <tr>
                     <th>Product</th>
                     <th>Category</th>
+                    <th>Occasions</th>
                     <th>Current Version</th>
                     <th>Stock</th>
                     <th>Default Price</th>
@@ -215,6 +249,19 @@ export default function ProductList() {
                         <Link to={`/products/${r.id}`} className="text-decoration-none fw-semibold">{r.name}</Link>
                       </td>
                       <td>{r.category || '—'}</td>
+                      <td>
+                        {(r.occasionIds ?? []).length === 0 ? (
+                          <span className="text-muted">—</span>
+                        ) : (
+                          <div className="d-flex flex-wrap gap-1">
+                            {(r.occasionIds ?? []).map(oid => (
+                              <span key={oid} className="badge bg-light text-dark border">
+                                {occasionMap[oid] ?? oid.slice(0, 6)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </td>
                       <td>{r.activeVersion?.version ?? <span className="text-muted">None</span>}</td>
                       <td>{r.stock}</td>
                       <td>{formatCurrency(r.defaultSellingPrice)}</td>

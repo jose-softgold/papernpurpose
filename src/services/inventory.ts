@@ -4,11 +4,26 @@ import { InventoryTransaction, TransactionType } from '../types'
 
 const col = collection(db, 'inventoryTransactions')
 
+const UNASSIGNED_KEY = '__unassigned__'
+
+export type ProductStockBySeason = Record<string, Record<string, number>>
+
 export const inventoryService = {
   async getStock(itemType: string, itemId: string): Promise<number> {
     const q = query(col, where('itemType', '==', itemType), where('itemId', '==', itemId))
     const snap = await getDocs(q)
     return snap.docs.reduce((sum, d) => sum + (d.data().quantity as number), 0)
+  },
+
+  async getStockForSeason(itemType: 'product', itemId: string, occasionSeasonId: string | null): Promise<number> {
+    const q = query(col, where('itemType', '==', itemType), where('itemId', '==', itemId))
+    const snap = await getDocs(q)
+    return snap.docs.reduce((sum, d) => {
+      const data = d.data()
+      const seasonId = (data.occasionSeasonId as string | null | undefined) ?? null
+      if (seasonId !== occasionSeasonId) return sum
+      return sum + (data.quantity as number)
+    }, 0)
   },
 
   async getMaterialStocks(): Promise<Record<string, number>> {
@@ -32,6 +47,22 @@ export const inventoryService = {
     })
     return stocks
   },
+
+  /** Per-product stock split by occasionSeasonId; null season → UNASSIGNED_KEY */
+  async getProductStocksBySeason(): Promise<ProductStockBySeason> {
+    const q = query(col, where('itemType', '==', 'product'))
+    const snap = await getDocs(q)
+    const stocks: ProductStockBySeason = {}
+    snap.docs.forEach(d => {
+      const { itemId, quantity, occasionSeasonId } = d.data()
+      const key = (occasionSeasonId as string | null | undefined) ?? UNASSIGNED_KEY
+      if (!stocks[itemId]) stocks[itemId] = {}
+      stocks[itemId][key] = (stocks[itemId][key] ?? 0) + quantity
+    })
+    return stocks
+  },
+
+  unassignedSeasonKey: UNASSIGNED_KEY,
 
   async addTransaction(tx: Omit<InventoryTransaction, 'id' | 'createdAt'>): Promise<string> {
     const ref = await addDoc(col, { ...tx, createdAt: serverTimestamp() })

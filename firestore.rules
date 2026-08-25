@@ -75,11 +75,28 @@ service cloud.firestore {
       return request.auth.uid in resource.data.get('assignedWorkerIds', []);
     }
 
-    // One-time marker claimed by the very first owner
+    // One-time marker claimed by the very first owner; bankTags is owner/admin curated
     match /meta/{docId} {
       allow get: if signedIn();
-      allow create: if signedIn() && docId == 'bootstrap' && !bootstrapClaimed();
-      allow update, delete, list: if false;
+      allow list: if false;
+      allow create: if
+        (signedIn() && docId == 'bootstrap' && !bootstrapClaimed()) ||
+        ((docId == 'bankTags' || docId == 'personalCategories' || docId == 'bankCategories' || docId == 'expenseBudgets') && isAdminOrOwner());
+      allow update: if (docId == 'bankTags' || docId == 'personalCategories' || docId == 'bankCategories' || docId == 'expenseBudgets') && isAdminOrOwner();
+      allow delete: if false;
+    }
+
+    // Gmail OAuth refresh tokens — Admin SDK only; never expose to clients
+    match /integrations/{docId} {
+      allow read, write: if false;
+    }
+
+    match /bankTransactions/{docId} {
+      allow read, write: if isAdminOrOwner();
+    }
+
+    match /workerAdvances/{docId} {
+      allow read, write: if isAdminOrOwner();
     }
 
     match /users/{uid} {
@@ -124,6 +141,15 @@ service cloud.firestore {
       allow write: if isAdminOrOwner();
     }
     match /bomItems/{docId} {
+      allow read: if canRead();
+      allow write: if isAdminOrOwner();
+    }
+
+    match /occasions/{docId} {
+      allow read: if canRead();
+      allow write: if isAdminOrOwner();
+    }
+    match /occasionSeasons/{docId} {
       allow read: if canRead();
       allow write: if isAdminOrOwner();
     }

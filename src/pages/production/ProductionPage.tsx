@@ -16,7 +16,8 @@ import PageHeader from '../../components/PageHeader'
 import DataGrid from '../../components/DataGrid'
 import ToastContainer from '../../components/ToastContainer'
 import WorkerPicker from '../../components/WorkerPicker'
-import type { Product, ProductVersion, BomItem, Material, Production, Order, OrderItem, WorkerOption } from '../../types'
+import type { Product, ProductVersion, BomItem, Material, Production, Order, OrderItem, WorkerOption, OccasionSeason } from '../../types'
+import { occasionService } from '../../services/occasions'
 import { useAuth } from '../../hooks/useAuth'
 import { isAdminOrOwner, isWorker as roleIsWorker } from '../../utils/roles'
 import { millisOf } from '../../utils/sort'
@@ -76,6 +77,9 @@ export default function ProductionPage() {
   const [productMap, setProductMap] = useState<Record<string, Product>>({})
   const [versionMap, setVersionMap] = useState<Record<string, ProductVersion>>({})
   const [myWorkOnly, setMyWorkOnly] = useState(false)
+  const [seasons, setSeasons] = useState<OccasionSeason[]>([])
+  const [selectedSeasonId, setSelectedSeasonId] = useState('')
+  const [batchCodePreview, setBatchCodePreview] = useState('')
 
   const [submitting, setSubmitting] = useState(false)
   const [completingId, setCompletingId] = useState<string | null>(null)
@@ -104,6 +108,7 @@ export default function ProductionPage() {
         setOrderItemsById({})
       })
     if (canAssign) usersService.listWorkers().then(setWorkers).catch(() => {})
+    occasionService.getAllSeasons().then(setSeasons).catch(() => {})
   }, [canAssign, isWorker, user?.uid])
 
   useEffect(() => {
@@ -132,6 +137,29 @@ export default function ProductionPage() {
     })
     return () => { cancelled = true }
   }, [selectedProductId])
+
+  const selectedProduct = products.find(p => p.id === selectedProductId)
+  const eligibleSeasons = useMemo(() => {
+    const ids = selectedProduct?.occasionIds ?? []
+    if (!ids.length) return seasons.filter(s => s.status === 'active')
+    return seasons.filter(s => s.status === 'active' && ids.includes(s.occasionId))
+  }, [seasons, selectedProduct])
+
+  useEffect(() => {
+    if (!selectedSeasonId) {
+      setBatchCodePreview('')
+      return
+    }
+    occasionService.nextSeasonBatchCode(selectedSeasonId)
+      .then(setBatchCodePreview)
+      .catch(() => setBatchCodePreview(''))
+  }, [selectedSeasonId])
+
+  useEffect(() => {
+    if (selectedSeasonId && !eligibleSeasons.some(s => s.id === selectedSeasonId)) {
+      setSelectedSeasonId('')
+    }
+  }, [eligibleSeasons, selectedSeasonId])
 
   useEffect(() => {
     if (!selectedVersionId || expectedQty < 1) {
@@ -229,6 +257,8 @@ export default function ProductionPage() {
         unitCost: r.material?.costPerUnit ?? 0,
         unit: r.material?.unit ?? r.bomItem.unit,
       }))
+      const seasonId = selectedSeasonId || null
+      const batchCode = seasonId ? batchCodePreview || undefined : undefined
 
       if (completeNow) {
         await productionService.complete({
@@ -239,6 +269,8 @@ export default function ProductionPage() {
           productionDate: ts,
           notes,
           orderId: orderId || null,
+          occasionSeasonId: seasonId,
+          batchCode,
           assignedWorkerIds: ids,
           assignedWorkerNames: names,
           assignedBy: user?.uid,
@@ -253,6 +285,8 @@ export default function ProductionPage() {
           productionDate: ts,
           notes,
           orderId: orderId || null,
+          occasionSeasonId: seasonId,
+          batchCode,
           assignedWorkerIds: ids,
           assignedWorkerNames: names,
           assignedBy: user?.uid,
@@ -273,6 +307,8 @@ export default function ProductionPage() {
       setProductionDate(todayStr())
       setNotes('')
       setAssignedIds([])
+      setSelectedSeasonId('')
+      setBatchCodePreview('')
       setMaterialRows([])
       loadHistory()
     } catch (err) {
@@ -322,6 +358,7 @@ export default function ProductionPage() {
         notes: p.notes,
         orderId: p.orderId,
         batchCode: p.batchCode,
+        occasionSeasonId: p.occasionSeasonId ?? null,
         assignedWorkerIds: p.assignedWorkerIds,
         assignedWorkerNames: p.assignedWorkerNames,
         bomMaterials,
@@ -390,6 +427,23 @@ export default function ProductionPage() {
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="col-md-4">
+                <label className="form-label">Occasion season (optional)</label>
+                <select
+                  className="form-select"
+                  value={selectedSeasonId}
+                  onChange={e => setSelectedSeasonId(e.target.value)}
+                  disabled={!selectedProductId}
+                >
+                  <option value="">Unassigned stock</option>
+                  {eligibleSeasons.map(s => (
+                    <option key={s.id} value={s.id}>{s.name} ({s.status})</option>
+                  ))}
+                </select>
+                {batchCodePreview && (
+                  <div className="form-text font-monospace">Batch: {batchCodePreview}</div>
+                )}
               </div>
               <div className="col-6 col-md-2">
                 <label className="form-label">Expected qty</label>

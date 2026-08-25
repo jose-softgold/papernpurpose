@@ -24,10 +24,23 @@ export default function Login() {
     setError('')
     setSubmitting(true)
     try {
-      await signIn(email, password)
+      await signIn(email.trim(), password)
       navigate('/', { replace: true })
-    } catch {
-      setError('Invalid email or password')
+    } catch (err) {
+      const code = typeof err === 'object' && err && 'code' in err ? String(err.code) : ''
+      if (code === 'auth/operation-not-allowed') {
+        setError('Email/Password sign-in is not enabled in Firebase Authentication.')
+      } else if (code === 'auth/unauthorized-domain') {
+        setError('This site is not an authorized domain in Firebase Authentication.')
+      } else if (code === 'auth/too-many-requests') {
+        setError('Too many failed attempts. Wait a minute, then try again.')
+      } else if (code === 'auth/user-disabled') {
+        setError('This account is disabled.')
+      } else if (code === 'auth/invalid-credential' || code === 'auth/wrong-password' || code === 'auth/user-not-found' || code === 'auth/invalid-email') {
+        setError('Invalid email or password')
+      } else {
+        setError(code ? `Sign-in failed (${code})` : 'Invalid email or password')
+      }
     } finally {
       setSubmitting(false)
     }

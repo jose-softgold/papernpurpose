@@ -502,6 +502,58 @@ h1, h2, h3, h4, h5 {
 
 .pc-stat.is-alert .pc-stat-value { color: #d93b3d; }
 
+@media (max-width: 575.98px) {
+  .pc-stat {
+    padding: 0.7rem 0.75rem;
+    gap: 0.3rem;
+  }
+  .pc-stat-icon {
+    width: 28px;
+    height: 28px;
+    font-size: 0.85rem;
+    border-radius: 8px;
+  }
+  .pc-stat-value {
+    font-size: 1.15rem;
+  }
+  .pc-stat-label {
+    font-size: 0.7rem;
+  }
+}
+
+/* ---------- Budget bars (expense tracker) ---------- */
+
+.pc-budget-row {
+  padding: 0.15rem 0;
+}
+
+.pc-budget-row:hover .fw-semibold {
+  color: var(--pc-violet);
+}
+
+.pc-budget-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #eceaf7;
+  overflow: hidden;
+}
+
+.pc-budget-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+
+.pc-budget-bar-fill.tone-ok { background: #2a9d8f; }
+.pc-budget-bar-fill.tone-warn { background: #e9a319; }
+.pc-budget-bar-fill.tone-over { background: #d93b3d; }
+
+@media (max-width: 575.98px) {
+  .pc-budget-bar {
+    height: 6px;
+  }
+}
+
 /* ---------- Chat ---------- */
 
 .pc-chat-scroll {

@@ -1,11 +1,20 @@
 import { initializeApp } from 'firebase-admin/app'
 import { getFirestore, FieldValue } from 'firebase-admin/firestore'
-import { onCall, HttpsError } from 'firebase-functions/v2/https'
+import { onCall, onRequest, HttpsError } from 'firebase-functions/v2/https'
 import { setGlobalOptions } from 'firebase-functions/v2'
+import { randomBytes } from 'crypto'
 import { resolveActor, syncCustomClaims } from './actor'
-import { AuthzError, UserRole } from './authz'
+import { AuthzError, UserRole, isAdminOrOwner } from './authz'
 import { runTool, ToolName, catalogForTool, getCatalogNames } from './domain/tools'
 import { ChatMessage, InlineAttachment, PendingToolCall, runLlmFollowUp, runLlmTurn } from './llm/gemini'
+import { buildAuthUrl, exchangeCode, getAuthedGmail, toPublicStatus } from './gmail/client'
+import {
+  DEFAULT_SENDER_ALLOWLIST,
+  gmailDocRef,
+  GmailIntegrationDoc,
+  requireOAuthConfig,
+} from './gmail/config'
+import { backfillMessages, syncFromHistory } from './gmail/ingest'
 
 interface ChatAttachment {
   url: string
@@ -470,6 +479,246 @@ export const chatAssistant = onCall({ timeoutSeconds: 120 }, async request => {
       updatedAt: FieldValue.serverTimestamp(),
     })
     return { sessionId, reply: turn.reply, pendingTool: null }
+  } catch (err) {
+    mapError(err)
+  }
+})
+
+// ─── Gmail bank sync ─────────────────────────────────────────────────────────
+
+function callbackRedirectUri(reqHost?: string, reqProtocol?: string): string {
+  const configured = process.env.GMAIL_OAUTH_REDIRECT_URI || ''
+  if (configured) return configured
+  if (process.env.FUNCTIONS_EMULATOR === 'true') {
+    const project =
+      process.env.GCLOUD_PROJECT ||
+      process.env.GCP_PROJECT ||
+      process.env.GOOGLE_CLOUD_PROJECT ||
+      'demo-project'
+    return `http://127.0.0.1:5001/${project}/asia-south1/gmailOAuthCallback`
+  }
+  if (reqHost) {
+    const proto = reqProtocol === 'http' ? 'http' : 'https'
+    return `${proto}://${reqHost}/gmailOAuthCallback`
+  }
+  const project =
+    process.env.GCLOUD_PROJECT ||
+    process.env.GCP_PROJECT ||
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    ''
+  return `https://asia-south1-${project}.cloudfunctions.net/gmailOAuthCallback`
+}
+
+export const gmailStatus = onCall(async request => {
+  try {
+    const uid = requireAuth(request.auth?.uid)
+    const actor = await resolveActor(uid)
+    if (!isAdminOrOwner(actor.role) && actor.role !== 'viewer') {
+      throw new HttpsError('permission-denied', 'Not allowed')
+    }
+    const snap = await gmailDocRef().get()
+    const data = snap.exists ? (snap.data() as GmailIntegrationDoc) : undefined
+    const status = toPublicStatus(data)
+    if (!status.connected) {
+      status.senderAllowlist = DEFAULT_SENDER_ALLOWLIST
+    }
+    return status
+  } catch (err) {
+    mapError(err)
+  }
+})
+
+export const gmailOAuthStart = onCall(async request => {
+  try {
+    const uid = requireAuth(request.auth?.uid)
+    const actor = await resolveActor(uid)
+    if (actor.role !== 'owner') {
+      throw new HttpsError('permission-denied', 'Only the owner can connect the bank inbox')
+    }
+    requireOAuthConfig()
+    const state = randomBytes(24).toString('hex')
+    const redirectUri = callbackRedirectUri()
+    await gmailDocRef().set(
+      {
+        oauthState: state,
+        oauthStateExpiresAt: Date.now() + 15 * 60 * 1000,
+        connectedBy: uid,
+      },
+      { merge: true },
+    )
+    const url = buildAuthUrl(redirectUri, state)
+    return { url, redirectUri }
+  } catch (err) {
+    mapError(err)
+  }
+})
+
+export const gmailOAuthCallback = onRequest({ cors: false }, async (req, res) => {
+  const html = (title: string, body: string, ok: boolean) =>
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+    <style>body{font-family:system-ui,sans-serif;max-width:480px;margin:3rem auto;padding:0 1rem;line-height:1.5}
+    .ok{color:#0a7} .err{color:#c33}</style></head><body>${body}
+    <p><a href="/settings">Back to Settings</a></p>
+    <script>try{window.opener&&window.opener.postMessage({type:'gmail-oauth',ok:${ok}},'*')}catch(e){}
+    setTimeout(function(){window.close()},2500)</script></body></html>`
+
+  try {
+    if (req.method !== 'GET') {
+      res.status(405).send('Method not allowed')
+      return
+    }
+    const code = String(req.query.code ?? '')
+    const state = String(req.query.state ?? '')
+    const errParam = String(req.query.error ?? '')
+    if (errParam) {
+      res.status(400).send(html('Error', `<p class="err">Google returned: ${errParam}</p>`, false))
+      return
+    }
+    if (!code || !state) {
+      res.status(400).send(html('Error', `<p class="err">Missing code or state.</p>`, false))
+      return
+    }
+
+    const snap = await gmailDocRef().get()
+    const existing = snap.exists ? (snap.data() as GmailIntegrationDoc) : null
+    if (!existing?.oauthState || existing.oauthState !== state) {
+      res
+        .status(400)
+        .send(html('Error', `<p class="err">Invalid OAuth state. Try Connect again.</p>`, false))
+      return
+    }
+    if (existing.oauthStateExpiresAt && Date.now() > existing.oauthStateExpiresAt) {
+      res
+        .status(400)
+        .send(html('Error', `<p class="err">OAuth session expired. Try Connect again.</p>`, false))
+      return
+    }
+
+    const host = req.get('host') || undefined
+    const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim()
+    const redirectUri = callbackRedirectUri(host, proto)
+    const { refreshToken } = await exchangeCode(redirectUri, code)
+
+    await gmailDocRef().set(
+      {
+        refreshToken,
+        oauthState: null,
+        oauthStateExpiresAt: null,
+        connectedAt: FieldValue.serverTimestamp(),
+        connectedBy: existing.connectedBy || 'oauth',
+        senderAllowlist: existing.senderAllowlist?.length
+          ? existing.senderAllowlist
+          : DEFAULT_SENDER_ALLOWLIST,
+        lastError: null,
+      },
+      { merge: true },
+    )
+
+    const { gmail } = await getAuthedGmail()
+    const profile = await gmail.users.getProfile({ userId: 'me' })
+    const email = profile.data.emailAddress || ''
+
+    await gmailDocRef().set(
+      {
+        email,
+        historyId: String(profile.data.historyId || ''),
+        connectedAt: FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    )
+
+    res.status(200).send(
+      html(
+        'Connected',
+        `<p class="ok">Bank inbox connected: <strong>${email || 'Gmail'}</strong>.</p>
+         <p>You can close this window and return to Settings.</p>`,
+        true,
+      ),
+    )
+  } catch (err) {
+    console.error(err)
+    const msg = err instanceof Error ? err.message : 'OAuth failed'
+    res.status(500).send(html('Error', `<p class="err">${msg}</p>`, false))
+  }
+})
+
+export const gmailDisconnect = onCall(async request => {
+  try {
+    const uid = requireAuth(request.auth?.uid)
+    const actor = await resolveActor(uid)
+    if (actor.role !== 'owner') {
+      throw new HttpsError('permission-denied', 'Only the owner can disconnect the bank inbox')
+    }
+    await gmailDocRef().delete()
+    return { ok: true }
+  } catch (err) {
+    mapError(err)
+  }
+})
+
+export const gmailUpdateSettings = onCall(async request => {
+  try {
+    const uid = requireAuth(request.auth?.uid)
+    const actor = await resolveActor(uid)
+    if (!isAdminOrOwner(actor.role)) {
+      throw new HttpsError('permission-denied', 'Only owners/admins can update Gmail settings')
+    }
+    const snap = await gmailDocRef().get()
+    if (!snap.exists || !(snap.data() as GmailIntegrationDoc).refreshToken) {
+      throw new HttpsError('failed-precondition', 'Connect a bank inbox first')
+    }
+    const allowlist = Array.isArray(request.data?.senderAllowlist)
+      ? (request.data.senderAllowlist as unknown[])
+          .map(s => String(s).trim())
+          .filter(Boolean)
+          .slice(0, 40)
+      : undefined
+    const labelId =
+      request.data?.labelId === undefined
+        ? undefined
+        : request.data.labelId
+          ? String(request.data.labelId).trim()
+          : null
+
+    const patch: Record<string, unknown> = {}
+    if (allowlist) patch.senderAllowlist = allowlist
+    if (labelId !== undefined) patch.labelId = labelId
+    if (!Object.keys(patch).length) {
+      throw new HttpsError('invalid-argument', 'No settings to update')
+    }
+    await gmailDocRef().set(patch, { merge: true })
+    const updated = await gmailDocRef().get()
+    return toPublicStatus(updated.data() as GmailIntegrationDoc)
+  } catch (err) {
+    mapError(err)
+  }
+})
+
+export const gmailBackfill = onCall({ timeoutSeconds: 540 }, async request => {
+  try {
+    const uid = requireAuth(request.auth?.uid)
+    const actor = await resolveActor(uid)
+    if (!isAdminOrOwner(actor.role)) {
+      throw new HttpsError('permission-denied', 'Only owners/admins can sync mail')
+    }
+    const days = Math.min(90, Math.max(1, Number(request.data?.days ?? 7) || 7))
+    const maxMessages = Math.min(500, Math.max(1, Number(request.data?.maxMessages ?? 500) || 500))
+    const result = await backfillMessages(days, maxMessages)
+    return { ok: true, days, ...result }
+  } catch (err) {
+    mapError(err)
+  }
+})
+
+export const gmailSyncNow = onCall({ timeoutSeconds: 120 }, async request => {
+  try {
+    const uid = requireAuth(request.auth?.uid)
+    const actor = await resolveActor(uid)
+    if (!isAdminOrOwner(actor.role)) {
+      throw new HttpsError('permission-denied', 'Only owners/admins can sync mail')
+    }
+    const result = await syncFromHistory()
+    return { ok: true, ...result }
   } catch (err) {
     mapError(err)
   }

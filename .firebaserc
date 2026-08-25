@@ -1,5 +1,13 @@
 {
   "projects": {
-    "default": "demo-project"
+    "default": "paperpurpose-baecd"
+  },
+  "targets": {
+    "paperpurpose-baecd": {
+      "hosting": {
+        "app": ["paperpurpose-baecd"],
+        "www": ["paperpurpose-site"]
+      }
+    }
   }
 }

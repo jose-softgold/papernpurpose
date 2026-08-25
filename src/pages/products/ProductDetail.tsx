@@ -5,9 +5,10 @@ import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'fi
 import { db, storage } from '../../firebase/config'
 import { productService } from '../../services/products'
 import { inventoryService } from '../../services/inventory'
+import { occasionService } from '../../services/occasions'
 import { bomService } from '../../services/bom'
 import { materialService } from '../../services/materials'
-import { Product, ProductVersion, Production, OrderItem, Order, BomItem, Material } from '../../types'
+import { Product, ProductVersion, Production, OrderItem, Order, BomItem, Material, Occasion } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import ConfirmModal from '../../components/ConfirmModal'
 import StatusBadge from '../../components/StatusBadge'
@@ -39,6 +40,8 @@ export default function ProductDetail() {
   const [orders, setOrders] = useState<Order[]>([])
   const [customers, setCustomers] = useState<CustomerRecord[]>([])
   const [materials, setMaterials] = useState<Material[]>([])
+  const [occasions, setOccasions] = useState<Occasion[]>([])
+  const [selectedOccasionIds, setSelectedOccasionIds] = useState<string[]>([])
   const [bomItems, setBomItems] = useState<BomItem[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -90,6 +93,7 @@ export default function ProductDetail() {
           allOrders,
           allCustomers,
           allMaterials,
+          allOccasions,
         ] = await Promise.all([
           productService.getById(id),
           productService.getVersions(id),
@@ -99,11 +103,13 @@ export default function ProductDetail() {
           getDocs(collection(db, 'orders')).then(s => s.docs.map(d => ({ id: d.id, ...d.data() } as Order))),
           getDocs(collection(db, 'customers')).then(s => s.docs.map(d => ({ id: d.id, name: (d.data().name as string) || '' }))),
           materialService.getAll(),
+          occasionService.getActiveOccasions(),
         ])
 
         if (!prod) { setLoading(false); return }
 
         setProduct(prod)
+        setSelectedOccasionIds(prod.occasionIds ?? [])
         setPackagingNotes(prod.packagingNotes ?? '')
         setProductForm({
           name: prod.name,
@@ -127,6 +133,7 @@ export default function ProductDetail() {
         setOrders(allOrders)
         setCustomers(allCustomers)
         setMaterials(allMaterials)
+        setOccasions(allOccasions)
       } catch {
         showToast('Failed to load product data', 'danger')
       } finally {
@@ -188,6 +195,14 @@ export default function ProductDetail() {
   })
   const customerAggRows = Object.values(customerAgg)
 
+  const occasionMap = Object.fromEntries(occasions.map(o => [o.id, o.name]))
+
+  const toggleOccasion = (occasionId: string) => {
+    setSelectedOccasionIds(prev =>
+      prev.includes(occasionId) ? prev.filter(id => id !== occasionId) : [...prev, occasionId],
+    )
+  }
+
   // ---- Handlers ----
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -201,6 +216,7 @@ export default function ProductDetail() {
         defaultSellingPrice: parseFloat(productForm.defaultSellingPrice) || 0,
         gstRate: parseFloat(productForm.gstRate) || 0,
         hsnSac: productForm.hsnSac.trim(),
+        occasionIds: selectedOccasionIds,
       }
       await productService.update(id, updates)
       setProduct(prev => prev ? { ...prev, ...updates } : prev)
@@ -466,7 +482,10 @@ export default function ProductDetail() {
             <div className="card-header d-flex justify-content-between align-items-center">
               <h5 className="mb-0">Product Information</h5>
               {!editingProduct && (
-                <button className="btn btn-sm btn-outline-primary" onClick={() => setEditingProduct(true)}>Edit</button>
+                <button className="btn btn-sm btn-outline-primary" onClick={() => {
+                  setSelectedOccasionIds(product.occasionIds ?? [])
+                  setEditingProduct(true)
+                }}>Edit</button>
               )}
             </div>
             <div className="card-body">
@@ -501,6 +520,24 @@ export default function ProductDetail() {
                       <textarea className="form-control" rows={2} value={productForm.description}
                         onChange={e => setProductForm(f => ({ ...f, description: e.target.value }))} />
                     </div>
+                    {occasions.length > 0 && (
+                      <div className="col-12">
+                        <label className="form-label">Occasions</label>
+                        <div className="d-flex flex-wrap gap-2">
+                          {occasions.map(o => (
+                            <label key={o.id} className="form-check form-check-inline mb-0">
+                              <input
+                                type="checkbox"
+                                className="form-check-input"
+                                checked={selectedOccasionIds.includes(o.id)}
+                                onChange={() => toggleOccasion(o.id)}
+                              />
+                              <span className="form-check-label">{o.name}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                   <div className="mt-3 d-flex gap-2">
                     <button type="submit" className="btn btn-primary btn-sm" disabled={savingProduct}>
@@ -529,6 +566,18 @@ export default function ProductDetail() {
                     <small className="text-muted d-block">Current Stock</small>
                     <span>{stock} units</span>
                   </div>
+                  {(product.occasionIds ?? []).length > 0 && (
+                    <div className="col-12">
+                      <small className="text-muted d-block">Occasions</small>
+                      <div className="d-flex flex-wrap gap-1 mt-1">
+                        {(product.occasionIds ?? []).map(oid => (
+                          <span key={oid} className="badge bg-light text-dark border">
+                            {occasionMap[oid] ?? oid.slice(0, 6)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {product.description && (
                     <div className="col-12">
                       <small className="text-muted d-block">Description</small>

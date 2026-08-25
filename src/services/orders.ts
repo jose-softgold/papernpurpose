@@ -5,6 +5,7 @@ import { db, auth } from '../firebase/config'
 import { Order, OrderItem, OrderStatus } from '../types'
 import { lineTax, roundMoney } from '../utils/tax'
 import { auditService } from './audit'
+import { inventoryService } from './inventory'
 
 function actorId() {
   return auth.currentUser?.uid ?? ''
@@ -102,6 +103,7 @@ export const orderService = {
     orderDate: Timestamp
     eventDate: Timestamp | null
     eventType: string
+    occasionId?: string | null
     discount: number
     notes: string
     assignedWorkerIds?: string[]
@@ -114,6 +116,7 @@ export const orderService = {
       unitPrice: number
       costPerUnit: number
       gstRate?: number
+      occasionSeasonId?: string | null
     }>
   }): Promise<string> {
     const batch = writeBatch(db)
@@ -130,6 +133,7 @@ export const orderService = {
       orderDate: data.orderDate,
       eventDate: data.eventDate,
       eventType: data.eventType,
+      occasionId: data.occasionId ?? null,
       subtotal,
       discount: data.discount,
       total,
@@ -165,6 +169,7 @@ export const orderService = {
         gstRate: item.gstRate ?? 0,
         taxableAmount: tax.taxableAmount,
         gstAmount: tax.gstAmount,
+        occasionSeasonId: item.occasionSeasonId ?? null,
       })
     })
 
@@ -189,7 +194,59 @@ export const orderService = {
     if (status === 'COMPLETED') {
       const items = await orderService.getItems(id)
       const createdBy = actorId()
+
       for (const item of items) {
+        const seasonId = item.occasionSeasonId ?? null
+        let stock = await inventoryService.getStockForSeason('product', item.productId, seasonId)
+        const sellFromSeason = seasonId
+
+        if (stock < item.quantity && seasonId !== null) {
+          const unassigned = await inventoryService.getStockForSeason('product', item.productId, null)
+          if (stock + unassigned < item.quantity) {
+            throw new Error(
+              `Insufficient stock for product ${item.productId}: need ${item.quantity}, have ${stock} in season + ${unassigned} unassigned`,
+            )
+          }
+          if (stock > 0) {
+            const txRef = doc(collection(db, 'inventoryTransactions'))
+            batch.set(txRef, {
+              itemType: 'product',
+              itemId: item.productId,
+              transactionType: 'SALE',
+              quantity: -stock,
+              unit: 'units',
+              referenceType: 'order',
+              referenceId: id,
+              notes: `Sale order ${id} (season)`,
+              occasionSeasonId: seasonId,
+              createdAt: serverTimestamp(),
+              createdBy,
+            })
+          }
+          const remainder = item.quantity - stock
+          const txRef = doc(collection(db, 'inventoryTransactions'))
+          batch.set(txRef, {
+            itemType: 'product',
+            itemId: item.productId,
+            transactionType: 'SALE',
+            quantity: -remainder,
+            unit: 'units',
+            referenceType: 'order',
+            referenceId: id,
+            notes: `Sale order ${id} (unassigned fallback)`,
+            occasionSeasonId: null,
+            createdAt: serverTimestamp(),
+            createdBy,
+          })
+          continue
+        }
+
+        if (stock < item.quantity) {
+          throw new Error(
+            `Insufficient stock for product ${item.productId}: need ${item.quantity}, have ${stock}`,
+          )
+        }
+
         const txRef = doc(collection(db, 'inventoryTransactions'))
         batch.set(txRef, {
           itemType: 'product',
@@ -200,6 +257,7 @@ export const orderService = {
           referenceType: 'order',
           referenceId: id,
           notes: `Sale order ${id}`,
+          occasionSeasonId: sellFromSeason,
           createdAt: serverTimestamp(),
           createdBy,
         })
@@ -251,14 +309,19 @@ export const orderService = {
     trackingId: string
     cost: number
     photoUrls: string[]
+    bankTransactionId?: string | null
   }): Promise<void> {
-    await updateDoc(doc(db, 'orders', id), {
+    const patch: Record<string, unknown> = {
       'shipment.logisticsCompany': data.logisticsCompany,
       'shipment.trackingId': data.trackingId,
       'shipment.cost': data.cost,
       'shipment.photoUrls': data.photoUrls,
       'shipment.updatedAt': serverTimestamp(),
       updatedAt: serverTimestamp(),
-    })
+    }
+    if (data.bankTransactionId !== undefined) {
+      patch['shipment.bankTransactionId'] = data.bankTransactionId
+    }
+    await updateDoc(doc(db, 'orders', id), patch)
   },
 }

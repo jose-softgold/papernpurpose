@@ -1,12 +1,24 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   reportService,
   SalesReportRow,
   ProductProfitabilityRow,
   CustomerSalesRow,
   ProductionReportRow,
+  BankCashSummary,
 } from '../../services/reports'
-import { formatCurrency, formatPercent } from '../../utils/format'
+import {
+  BankBooks,
+  BankTransaction,
+  BankTxStatus,
+  Customer,
+  Order,
+  Purchase,
+  Supplier,
+  WorkerOption,
+} from '../../types'
+import { formatCurrency, formatPercent, formatDate } from '../../utils/format'
 import { exportToCSV, exportToExcel } from '../../utils/export'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
@@ -14,16 +26,50 @@ import PageHeader from '../../components/PageHeader'
 import DataGrid from '../../components/DataGrid'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
+import { useAuth } from '../../hooks/useAuth'
+import { isAdminOrOwner } from '../../utils/roles'
+import { orderService } from '../../services/orders'
+import { purchaseService } from '../../services/purchases'
+import { customerService } from '../../services/customers'
+import { supplierService } from '../../services/suppliers'
+import { usersService } from '../../services/users'
+import { bankService } from '../../services/bank'
 
-type TabKey = 'sales' | 'profitability' | 'customers' | 'production'
+type TabKey = 'sales' | 'profitability' | 'customers' | 'production' | 'bank'
 
 interface DateRange {
   from: string
   to: string
 }
 
-function useDateRange() {
-  const [range, setRange] = useState<DateRange>({ from: '', to: '' })
+function isoDate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+function presetRange(kind: 'this_month' | 'last_month' | 'last_7' | 'last_30'): DateRange {
+  const now = new Date()
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (kind === 'this_month') {
+    const from = new Date(now.getFullYear(), now.getMonth(), 1)
+    const to = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+    return { from: isoDate(from), to: isoDate(to) }
+  }
+  if (kind === 'last_month') {
+    const from = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const to = new Date(now.getFullYear(), now.getMonth(), 0)
+    return { from: isoDate(from), to: isoDate(to) }
+  }
+  const days = kind === 'last_7' ? 6 : 29
+  const from = new Date(end)
+  from.setDate(from.getDate() - days)
+  return { from: isoDate(from), to: isoDate(end) }
+}
+
+function useDateRange(initial?: DateRange) {
+  const [range, setRange] = useState<DateRange>(initial ?? { from: '', to: '' })
   const toDates = () => ({
     from: range.from ? new Date(range.from) : undefined,
     to: range.to ? new Date(range.to + 'T23:59:59') : undefined,
@@ -36,36 +82,61 @@ function DateFilter({
   setRange,
   onGenerate,
   loading,
+  presets,
 }: {
   range: DateRange
   setRange: (r: DateRange) => void
   onGenerate: () => void
   loading: boolean
+  presets?: boolean
 }) {
   return (
-    <div className="row g-2 align-items-end mb-3">
-      <div className="col-auto">
-        <label className="form-label mb-1 small">From</label>
-        <input
-          type="date"
-          className="form-control form-control-sm"
-          value={range.from}
-          onChange={e => setRange({ ...range, from: e.target.value })}
-        />
-      </div>
-      <div className="col-auto">
-        <label className="form-label mb-1 small">To</label>
-        <input
-          type="date"
-          className="form-control form-control-sm"
-          value={range.to}
-          onChange={e => setRange({ ...range, to: e.target.value })}
-        />
-      </div>
-      <div className="col-auto">
-        <button className="btn btn-primary btn-sm" onClick={onGenerate} disabled={loading}>
-          {loading ? 'Generating…' : 'Generate Report'}
-        </button>
+    <div className="mb-3">
+      {presets && (
+        <div className="d-flex flex-wrap gap-1 mb-2">
+          {(
+            [
+              ['this_month', 'This month'],
+              ['last_month', 'Last month'],
+              ['last_7', 'Last 7 days'],
+              ['last_30', 'Last 30 days'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className="btn btn-sm btn-outline-secondary"
+              onClick={() => setRange(presetRange(key))}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="row g-2 align-items-end">
+        <div className="col-auto">
+          <label className="form-label mb-1 small">From</label>
+          <input
+            type="date"
+            className="form-control form-control-sm"
+            value={range.from}
+            onChange={e => setRange({ ...range, from: e.target.value })}
+          />
+        </div>
+        <div className="col-auto">
+          <label className="form-label mb-1 small">To</label>
+          <input
+            type="date"
+            className="form-control form-control-sm"
+            value={range.to}
+            onChange={e => setRange({ ...range, to: e.target.value })}
+          />
+        </div>
+        <div className="col-auto">
+          <button className="btn btn-primary btn-sm" onClick={onGenerate} disabled={loading}>
+            {loading ? 'Generating…' : 'Generate Report'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -422,22 +493,411 @@ function ProductionTab() {
   )
 }
 
+// ──────────────── Bank / Cash ────────────────
+type BankReasonFilter = 'all' | 'customer' | 'logistics' | 'recce' | 'worker' | 'purchase' | 'other'
+
+function reasonLabel(tx: BankTransaction): string {
+  const parts: string[] = []
+  if (tx.paymentKind) parts.push(`payment:${tx.paymentKind}`)
+  if (tx.expenseKind) parts.push(tx.expenseKind)
+  if (tx.workerPayKind) parts.push(`worker:${tx.workerPayKind}`)
+  if (tx.category || tx.personalCategory) parts.push(tx.category || tx.personalCategory || '')
+  return parts.filter(Boolean).join(' · ') || '—'
+}
+
+function BankCashTab() {
+  const { range, setRange, toDates } = useDateRange(presetRange('this_month'))
+  const [rows, setRows] = useState<BankTransaction[] | null>(null)
+  const [summary, setSummary] = useState<BankCashSummary | null>(null)
+  const [loading, setLoading] = useState(false)
+  const { toasts, showToast } = useToast()
+
+  const [booksFilter, setBooksFilter] = useState<'all' | BankBooks>('all')
+  const [directionFilter, setDirectionFilter] = useState<'all' | 'credit' | 'debit'>('all')
+  const [statusFilter, setStatusFilter] = useState<'all' | BankTxStatus>('all')
+  const [reasonFilter, setReasonFilter] = useState<BankReasonFilter>('all')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [search, setSearch] = useState('')
+
+  const [orders, setOrders] = useState<Order[]>([])
+  const [purchases, setPurchases] = useState<Purchase[]>([])
+  const [customers, setCustomers] = useState<Customer[]>([])
+  const [suppliers, setSuppliers] = useState<Supplier[]>([])
+  const [workers, setWorkers] = useState<WorkerOption[]>([])
+
+  useEffect(() => {
+    void Promise.all([
+      orderService.getAll().catch(() => [] as Order[]),
+      purchaseService.getAll().catch(() => [] as Purchase[]),
+      customerService.getAll().catch(() => [] as Customer[]),
+      supplierService.getAll().catch(() => [] as Supplier[]),
+      usersService.listWorkers().catch(() => [] as WorkerOption[]),
+    ]).then(([o, p, c, s, w]) => {
+      setOrders(o)
+      setPurchases(p)
+      setCustomers(c)
+      setSuppliers(s)
+      setWorkers(w)
+    })
+  }, [])
+
+  const customerMap = useMemo(
+    () => Object.fromEntries(customers.map(c => [c.id, c.name])),
+    [customers],
+  )
+  const supplierMap = useMemo(
+    () => Object.fromEntries(suppliers.map(s => [s.id, s.name])),
+    [suppliers],
+  )
+  const workerMap = useMemo(() => Object.fromEntries(workers.map(w => [w.id, w.name])), [workers])
+
+  const generate = async () => {
+    setLoading(true)
+    try {
+      const { from, to } = toDates()
+      const data = await reportService.getBankCashReport(from, to)
+      setRows(data.rows)
+      setSummary(data.summary)
+    } catch {
+      showToast('Failed to generate Bank / Cash report', 'danger')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const categoryOptions = useMemo(() => {
+    if (!rows) return []
+    const set = new Set<string>()
+    for (const t of rows) {
+      const c = (t.category || t.personalCategory || '').trim().toLowerCase()
+      if (c) set.add(c)
+    }
+    return [...set].sort()
+  }, [rows])
+
+  const filtered = useMemo(() => {
+    if (!rows) return []
+    return rows.filter(tx => {
+      const books = bankService.booksOf(tx)
+      if (booksFilter !== 'all' && books !== booksFilter) return false
+      if (directionFilter !== 'all' && tx.direction !== directionFilter) return false
+      if (statusFilter !== 'all' && tx.status !== statusFilter) return false
+      if (reasonFilter !== 'all' && bankService.reasonKind(tx) !== reasonFilter) return false
+      if (categoryFilter !== 'all') {
+        const c = (tx.category || tx.personalCategory || '').trim().toLowerCase()
+        if (c !== categoryFilter) return false
+      }
+      if (search.trim()) {
+        const q = search.toLowerCase()
+        const hay = [
+          tx.description,
+          tx.counterparty,
+          tx.bankName,
+          tx.category,
+          tx.personalCategory,
+          tx.paymentKind,
+          tx.expenseKind,
+          tx.workerPayKind,
+          tx.workerId ? workerMap[tx.workerId] : null,
+          ...(tx.tags ?? []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+        if (!hay.includes(q)) return false
+      }
+      return true
+    })
+  }, [
+    rows,
+    booksFilter,
+    directionFilter,
+    statusFilter,
+    reasonFilter,
+    categoryFilter,
+    search,
+    workerMap,
+  ])
+
+  function linkText(tx: BankTransaction): string {
+    const parts: string[] = []
+    if (tx.orderId) {
+      const o = orders.find(x => x.id === tx.orderId)
+      parts.push(
+        o
+          ? `Order: ${customerMap[o.customerId] || 'Customer'} (${o.status})`
+          : `Order ${tx.orderId.slice(0, 6)}`,
+      )
+    }
+    if (tx.purchaseId) {
+      const p = purchases.find(x => x.id === tx.purchaseId)
+      parts.push(
+        p
+          ? `Purchase: ${supplierMap[p.supplierId] || 'Supplier'}`
+          : `Purchase ${tx.purchaseId.slice(0, 6)}`,
+      )
+    }
+    if (tx.workerId) parts.push(workerMap[tx.workerId] || tx.workerId.slice(0, 6))
+    return parts.join(' · ') || '—'
+  }
+
+  const exportData: Record<string, unknown>[] = filtered.map(tx => ({
+    Date: tx.occurredAt?.toDate?.()?.toISOString().slice(0, 10) || '',
+    Amount: tx.amount,
+    Direction: tx.direction,
+    Books: bankService.booksOf(tx),
+    Reason: reasonLabel(tx),
+    Status: tx.status,
+    Links: linkText(tx),
+    Description: tx.description || tx.rawSubject || '',
+    Counterparty: tx.counterparty || '',
+    Category: tx.category || tx.personalCategory || '',
+  }))
+
+  const filename = `bank-cash-${range.from || 'all'}-to-${range.to || 'all'}`
+
+  return (
+    <>
+      <ToastContainer toasts={toasts} />
+      <DateFilter range={range} setRange={setRange} onGenerate={() => void generate()} loading={loading} presets />
+      {loading && <LoadingSpinner />}
+      {!loading && rows === null && (
+        <EmptyState message="Pick a month or date range, then generate the Bank / Cash report." />
+      )}
+      {!loading && rows && summary && (
+        <>
+          <div className="row g-2 mb-3">
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Business in</div>
+                <div className="fw-semibold text-success">{formatCurrency(summary.businessIn)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Business out</div>
+                <div className="fw-semibold text-danger">{formatCurrency(summary.businessOut)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Personal net</div>
+                <div className="fw-semibold">{formatCurrency(summary.personalNet)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Customer payments</div>
+                <div className="fw-semibold text-success">{formatCurrency(summary.customerPayments)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Logistics</div>
+                <div className="fw-semibold">{formatCurrency(summary.logistics)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Recce</div>
+                <div className="fw-semibold">{formatCurrency(summary.recce)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Worker float out</div>
+                <div className="fw-semibold">{formatCurrency(summary.workerFloatOut)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Worker float spend</div>
+                <div className="fw-semibold">{formatCurrency(summary.workerFloatSpend)}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="d-flex flex-wrap gap-2 align-items-end mb-3">
+            <div>
+              <label className="form-label small mb-0">Books</label>
+              <select
+                className="form-select form-select-sm"
+                value={booksFilter}
+                onChange={e => setBooksFilter(e.target.value as 'all' | BankBooks)}
+              >
+                <option value="all">All</option>
+                <option value="business">Business</option>
+                <option value="personal">Personal</option>
+                <option value="unassigned">Unassigned</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label small mb-0">Direction</label>
+              <select
+                className="form-select form-select-sm"
+                value={directionFilter}
+                onChange={e => setDirectionFilter(e.target.value as 'all' | 'credit' | 'debit')}
+              >
+                <option value="all">All</option>
+                <option value="credit">Credit</option>
+                <option value="debit">Debit</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label small mb-0">Status</label>
+              <select
+                className="form-select form-select-sm"
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value as 'all' | BankTxStatus)}
+              >
+                <option value="all">All</option>
+                <option value="pending">Pending</option>
+                <option value="reviewed">Reviewed</option>
+                <option value="matched">Matched</option>
+                <option value="ignored">Ignored</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label small mb-0">Reason</label>
+              <select
+                className="form-select form-select-sm"
+                value={reasonFilter}
+                onChange={e => setReasonFilter(e.target.value as BankReasonFilter)}
+              >
+                <option value="all">All</option>
+                <option value="customer">Customer payment</option>
+                <option value="logistics">Logistics</option>
+                <option value="recce">Recce</option>
+                <option value="worker">Worker</option>
+                <option value="purchase">Purchase</option>
+                <option value="other">Other / untagged</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label small mb-0">Category</label>
+              <select
+                className="form-select form-select-sm"
+                value={categoryFilter}
+                onChange={e => setCategoryFilter(e.target.value)}
+              >
+                <option value="all">All</option>
+                {categoryOptions.map(c => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex-grow-1" style={{ minWidth: 160 }}>
+              <label className="form-label small mb-0">Search</label>
+              <input
+                className="form-control form-control-sm"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Description, category…"
+              />
+            </div>
+            <div className="small text-muted pb-1">{filtered.length} / {rows.length} rows</div>
+          </div>
+
+          {filtered.length === 0 ? (
+            <EmptyState message="No bank transactions for this filter." />
+          ) : (
+            <DataGrid
+              items={filtered}
+              resetKey={`${booksFilter}-${directionFilter}-${statusFilter}-${reasonFilter}-${categoryFilter}-${search}-${range.from}-${range.to}`}
+              tableClassName="table table-sm table-hover mb-0"
+            >
+              {pageItems => (
+                <>
+                  <thead>
+                    <tr>
+                      <th>When</th>
+                      <th>Amount</th>
+                      <th>Books</th>
+                      <th>Reason</th>
+                      <th>Status</th>
+                      <th>Links</th>
+                      <th>Description</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pageItems.map(tx => (
+                      <tr key={tx.id}>
+                        <td className="small text-nowrap">{formatDate(tx.occurredAt)}</td>
+                        <td className="text-nowrap">
+                          <span className={tx.direction === 'credit' ? 'text-success' : 'text-danger'}>
+                            {tx.direction === 'credit' ? '+' : '−'}
+                            {formatCurrency(tx.amount)}
+                          </span>
+                        </td>
+                        <td>
+                          <span className="badge text-bg-secondary">{bankService.booksOf(tx)}</span>
+                        </td>
+                        <td className="small">{reasonLabel(tx)}</td>
+                        <td>
+                          <span className="badge text-bg-light border">{tx.status}</span>
+                        </td>
+                        <td className="small">{linkText(tx)}</td>
+                        <td className="small">{tx.description || tx.rawSubject || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </>
+              )}
+            </DataGrid>
+          )}
+          <ExportButtons data={exportData} filename={filename} show={filtered.length > 0} />
+        </>
+      )}
+    </>
+  )
+}
+
 // ──────────────── Main Page ────────────────
 export default function ReportsPage() {
-  const [tab, setTab] = useState<TabKey>('sales')
+  const { role } = useAuth()
+  const canBank = isAdminOrOwner(role)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab')
+  const initialTab: TabKey =
+    tabParam === 'bank' && canBank
+      ? 'bank'
+      : tabParam === 'profitability' ||
+          tabParam === 'customers' ||
+          tabParam === 'production' ||
+          tabParam === 'sales'
+        ? tabParam
+        : 'sales'
+  const [tab, setTab] = useState<TabKey>(initialTab)
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'sales', label: 'Sales Report' },
     { key: 'profitability', label: 'Product Profitability' },
     { key: 'customers', label: 'Customer Sales' },
     { key: 'production', label: 'Production Report' },
+    ...(canBank ? [{ key: 'bank' as const, label: 'Bank / Cash' }] : []),
   ]
+
+  useEffect(() => {
+    if (!canBank && tab === 'bank') setTab('sales')
+  }, [canBank, tab])
+
+  useEffect(() => {
+    if (tabParam === 'bank' && canBank) setTab('bank')
+  }, [tabParam, canBank])
+
+  function selectTab(next: TabKey) {
+    setTab(next)
+    if (next === 'bank') setSearchParams({ tab: 'bank' })
+    else setSearchParams({})
+  }
 
   return (
     <div>
       <PageHeader
         title="Reports"
-        subtitle="Sales, profitability and production over any date range"
+        subtitle="Sales, profitability, production, and bank cash over any date range"
         icon="📈"
       />
       <ul className="nav nav-tabs mb-3">
@@ -445,7 +905,7 @@ export default function ReportsPage() {
           <li key={t.key} className="nav-item">
             <button
               className={`nav-link${tab === t.key ? ' active' : ''}`}
-              onClick={() => setTab(t.key)}
+              onClick={() => selectTab(t.key)}
             >
               {t.label}
             </button>
@@ -457,6 +917,7 @@ export default function ReportsPage() {
         {tab === 'profitability' && <ProfitabilityTab />}
         {tab === 'customers' && <CustomerSalesTab />}
         {tab === 'production' && <ProductionTab />}
+        {tab === 'bank' && canBank && <BankCashTab />}
       </div>
     </div>
   )

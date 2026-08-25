@@ -11,11 +11,14 @@ import { orderService } from '../../services/orders'
 import { purchaseService } from '../../services/purchases'
 import { bomService } from '../../services/bom'
 import { productionService } from '../../services/production'
+import { occasionService } from '../../services/occasions'
 import { auditService } from '../../services/audit'
+import { bankService } from '../../services/bank'
+import { usersService } from '../../services/users'
 import PageHeader from '../../components/PageHeader'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
-import type { Customer, Material, Product, ProductVersion, Supplier } from '../../types'
+import type { Customer, Material, Product, ProductVersion, Supplier, WorkerOption } from '../../types'
 
 export type ImportKind =
   | 'customers'
@@ -26,6 +29,7 @@ export type ImportKind =
   | 'orders'
   | 'bom'
   | 'production'
+  | 'worker-spends'
 
 interface PreviewRow {
   row: number
@@ -44,6 +48,7 @@ const KINDS: { id: ImportKind; label: string }[] = [
   { id: 'orders', label: 'Orders' },
   { id: 'bom', label: 'BOM' },
   { id: 'production', label: 'Production' },
+  { id: 'worker-spends', label: 'Worker spends' },
 ]
 
 const TEMPLATES: Record<ImportKind, Record<string, unknown>> = {
@@ -127,6 +132,17 @@ const TEMPLATES: Record<ImportKind, Record<string, unknown>> = {
     date: '2026-08-10',
     notes: 'Catch-up batch',
   },
+  'worker-spends': {
+    date: '2026-08-20',
+    amount: 500,
+    worker: 'Ravi',
+    category: 'worker-spend',
+    material: 'Cardstock Red',
+    order: '',
+    'event type': '',
+    notes: 'Bought paper from market',
+    type: 'spend',
+  },
 }
 
 const HINTS: Record<ImportKind, string> = {
@@ -138,6 +154,8 @@ const HINTS: Record<ImportKind, string> = {
   orders: 'Columns: customer name, phone, order date, event date, event type, product name, qty, unit price, notes. Rows with the same customer + dates become one order. Missing customers/products are created.',
   bom: 'Columns: product, version, material, qty, unit. Links a material into a product version recipe. Missing materials/products/versions are created.',
   production: 'Columns: product, version, expected qty, actual qty, date, notes. Completes a batch and updates stock from the BOM. Product must already have a BOM.',
+  'worker-spends':
+    'Columns: date, amount, worker (name or email), category, material (optional), order/event (optional), notes, type (spend|advance). Creates Bank rows and posts to the worker advance ledger. Accepts CSV or Excel.',
 }
 
 const HEADERS: Record<ImportKind, string[]> = {
@@ -149,6 +167,7 @@ const HEADERS: Record<ImportKind, string[]> = {
   orders: ['Row', 'Customer', 'Product', 'Qty', 'Price', 'Status'],
   bom: ['Row', 'Product', 'Version', 'Material', 'Qty', 'Status'],
   production: ['Row', 'Product', 'Version', 'Expected', 'Actual', 'Status'],
+  'worker-spends': ['Row', 'Date', 'Worker', 'Amount', 'Category', 'Status'],
 }
 
 export default function ImportPage() {
@@ -321,16 +340,20 @@ interface Catalog {
   products: Product[]
   versions: ProductVersion[]
   bomVersionIds: Set<string>
+  workers: WorkerOption[]
+  orders: Array<{ id: string; eventType?: string; customerId?: string }>
 }
 
 async function loadCatalog(): Promise<Catalog> {
-  const [customers, suppliers, materials, products, versions, boms] = await Promise.all([
+  const [customers, suppliers, materials, products, versions, boms, workers, orders] = await Promise.all([
     customerService.getAll(),
     supplierService.getAll(),
     materialService.getAll(),
     productService.getAll(),
     productService.getAllVersions(),
     bomService.getAll(),
+    usersService.listWorkers().catch(() => [] as WorkerOption[]),
+    orderService.getAll().catch(() => []),
   ])
   return {
     customers,
@@ -339,6 +362,8 @@ async function loadCatalog(): Promise<Catalog> {
     products,
     versions,
     bomVersionIds: new Set(boms.map(b => b.productVersionId)),
+    workers,
+    orders: orders.map(o => ({ id: o.id, eventType: o.eventType, customerId: o.customerId })),
   }
 }
 
@@ -352,7 +377,62 @@ function mapKind(kind: ImportKind, r: Record<string, string>, row: number, cat: 
     case 'orders': return mapOrder(r, row, cat)
     case 'bom': return mapBom(r, row, cat)
     case 'production': return mapProduction(r, row, cat)
+    case 'worker-spends': return mapWorkerSpend(r, row, cat)
   }
+}
+
+function mapWorkerSpend(r: Record<string, string>, row: number, cat: Catalog): PreviewRow {
+  const workerRaw = cell(r, 'worker', 'worker name', 'name', 'email')
+  const amount = Number(cell(r, 'amount', 'amt', 'rupees').replace(/,/g, ''))
+  const dateRaw = cell(r, 'date', 'spend date', 'purchase date')
+  const category = (cell(r, 'category', 'cat') || 'worker-spend').toLowerCase()
+  const materialName = cell(r, 'material', 'material name')
+  const orderRaw = cell(r, 'order', 'event', 'event type', 'order id')
+  const notes = cell(r, 'notes', 'note')
+  const typeRaw = cell(r, 'type', 'kind', 'advance type').toLowerCase()
+  const postAdvance = typeRaw === 'advance' || typeRaw === 'out' || category === 'advance' ? 'out' : 'spend'
+
+  const worker =
+    cat.workers.find(
+      w =>
+        w.name.toLowerCase() === workerRaw.toLowerCase() ||
+        w.email.toLowerCase() === workerRaw.toLowerCase() ||
+        w.name.toLowerCase().includes(workerRaw.toLowerCase()),
+    ) || null
+  const material = materialName ? matchName(cat.materials, materialName) : null
+  const order =
+    orderRaw
+      ? cat.orders.find(
+          o =>
+            o.id === orderRaw ||
+            (o.eventType || '').toLowerCase() === orderRaw.toLowerCase() ||
+            (o.eventType || '').toLowerCase().includes(orderRaw.toLowerCase()),
+        )
+      : null
+
+  const date = parseDate(dateRaw)
+  const out: PreviewRow = {
+    row,
+    badges: [postAdvance],
+    cells: [dateRaw || '—', workerRaw || '—', String(amount || ''), category],
+    data: {
+      amount,
+      category,
+      description: notes || `${postAdvance} · ${workerRaw}`,
+      notes,
+      workerId: worker?.id,
+      workerName: worker?.name || workerRaw,
+      materialId: material?.id,
+      orderId: order?.id,
+      postAdvance,
+      occurredAtMs: date?.getTime(),
+    },
+  }
+  if (!workerRaw) out.error = 'Worker required'
+  else if (!worker) out.error = 'Worker not found (add under Settings → Users)'
+  else if (!Number.isFinite(amount) || amount <= 0) out.error = 'Amount required'
+  else if (!date) out.error = 'Valid date required'
+  return out
 }
 
 function mapCustomer(r: Record<string, string>, row: number, cat: Catalog): PreviewRow {
@@ -904,14 +984,26 @@ async function commitKind(kind: ImportKind, rows: PreviewRow[], onProgress: (n: 
         })
         onProgress(++n)
       }
+      const eventTypeStr = String(first.eventType ?? '')
+      const matchedOccasion = eventTypeStr ? await occasionService.matchOccasionByName(eventTypeStr) : null
+      const occasionId = matchedOccasion?.id ?? null
+      let defaultSeasonId: string | null = null
+      if (occasionId) {
+        const season = await occasionService.getActiveSeasonForOccasion(occasionId)
+        defaultSeasonId = season?.id ?? null
+      }
       await orderService.create({
         customerId,
         orderDate: Timestamp.fromDate(parseDate(String(first.orderDate)) ?? new Date()),
         eventDate: parseDate(String(first.eventDate ?? '')) ? Timestamp.fromDate(parseDate(String(first.eventDate))!) : null,
-        eventType: String(first.eventType ?? ''),
+        eventType: eventTypeStr,
+        occasionId,
         discount: 0,
         notes: String(first.notes ?? ''),
-        items,
+        items: items.map(item => ({
+          ...item,
+          occasionSeasonId: defaultSeasonId,
+        })),
       })
     }
     return n
@@ -992,6 +1084,31 @@ async function commitKind(kind: ImportKind, rows: PreviewRow[], onProgress: (n: 
         bomMaterials,
       })
       onProgress(++n)
+    }
+    return n
+  }
+
+  if (kind === 'worker-spends') {
+    for (const row of rows) {
+      const d = row.data
+      const occurredAt = d.occurredAtMs
+        ? new Date(Number(d.occurredAtMs))
+        : new Date()
+      const result = await bankService.createImportRow({
+        occurredAt,
+        amount: Number(d.amount),
+        direction: 'debit',
+        description: String(d.description || 'Worker spend'),
+        category: String(d.category || 'worker-spend'),
+        workerId: d.workerId ? String(d.workerId) : null,
+        workerName: d.workerName ? String(d.workerName) : undefined,
+        orderId: d.orderId ? String(d.orderId) : null,
+        materialId: d.materialId ? String(d.materialId) : null,
+        notes: String(d.notes ?? ''),
+        postAdvance: d.postAdvance === 'out' ? 'out' : 'spend',
+      })
+      if (!result.skipped) onProgress(++n)
+      else onProgress(n)
     }
     return n
   }

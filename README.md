@@ -181,11 +181,12 @@ Status changes are timestamped on the **Order Timeline**. At DISPATCHED you can 
    ```bash
    firebase deploy --only firestore:rules,firestore:indexes,storage,functions
    ```
-6. Build the web app:
+6. Build and deploy the CRM to the `app` Hosting target (keeps the public site on `www` separate):
    ```bash
    npm run build
+   firebase deploy --only hosting:app
    ```
-   Host `dist/` with Firebase Hosting or any static host.
+   Multi-site targets live in `.firebaserc`: `app` → `paperpurpose-baecd`, `www` → `paperpurpose-site` (marketing site repo).
 
 ---
 

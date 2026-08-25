@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
 import { useAuth } from '../../hooks/useAuth'
@@ -7,7 +7,8 @@ import { isWorker as roleIsWorker } from '../../utils/roles'
 import { orderService } from '../../services/orders'
 import { customerService } from '../../services/customers'
 import { productService } from '../../services/products'
-import { Order, OrderItem, OrderStatus, Customer } from '../../types'
+import { bankService } from '../../services/bank'
+import { Order, OrderItem, OrderStatus, Customer, BankTransaction } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
@@ -83,6 +84,7 @@ export default function OrderDetail() {
   const [shipExistingUrls, setShipExistingUrls] = useState<string[]>([])
   const [savingShipment, setSavingShipment] = useState(false)
   const shipFileRef = useRef<HTMLInputElement>(null)
+  const [bankTxs, setBankTxs] = useState<BankTransaction[]>([])
 
   // Bill photo lightbox
   const [viewingPhotos, setViewingPhotos] = useState<string[] | null>(null)
@@ -123,8 +125,14 @@ export default function OrderDetail() {
       })))
 
       if (!isWorker) {
-        const c = await customerService.getById(o.customerId)
+        const [c, linkedBank] = await Promise.all([
+          customerService.getById(o.customerId),
+          bankService.listByOrderId(id).catch(() => [] as BankTransaction[]),
+        ])
         setCustomer(c)
+        setBankTxs(linkedBank)
+      } else {
+        setBankTxs([])
       }
     } catch {
       if (isWorker) {
@@ -191,6 +199,7 @@ export default function OrderDetail() {
         trackingId: shipTracking,
         cost: isWorker ? (order?.shipment?.cost ?? 0) : (parseFloat(shipCost) || 0),
         photoUrls,
+        bankTransactionId: order?.shipment?.bankTransactionId ?? null,
       })
       showToast('Shipment details saved', 'success')
       setShipPhotos([])
@@ -229,6 +238,18 @@ export default function OrderDetail() {
   const laterStatus = !['DRAFT', 'QUOTED', 'CONFIRMED'].includes(order.status)
   const showAssignedReadOnly = !canEditAssignment && (isWorker || order.status === 'IN_PRODUCTION' || (laterStatus && hasAssignment))
 
+  const paymentTxs = bankTxs.filter(t => t.paymentKind === 'advance' || t.paymentKind === 'final')
+  const logisticsTxs = bankTxs.filter(t => t.expenseKind === 'logistics')
+  const workerPayTxs = bankTxs.filter(t => t.workerPayKind === 'payout')
+  const collected = paymentTxs.reduce((s, t) => s + (t.direction === 'credit' ? t.amount : 0), 0)
+  const orderTotal = Number(order.grandTotal ?? order.total ?? 0)
+  const remaining = orderTotal - collected
+  const logisticsBankSum = logisticsTxs.reduce((s, t) => s + t.amount, 0)
+  const shipCostNum = order.shipment?.cost != null ? Number(order.shipment.cost) : null
+  const logisticsOk =
+    logisticsTxs.length > 0 &&
+    (shipCostNum == null || Math.abs(shipCostNum - logisticsBankSum) <= 1)
+  const workerPaySum = workerPayTxs.reduce((s, t) => s + t.amount, 0)
   const handleSaveAssignment = async () => {
     if (!id) return
     setSavingAssign(true)
@@ -401,6 +422,84 @@ export default function OrderDetail() {
           </ul>
         </div>
       </div>
+
+      {/* Bank reconciliation */}
+      {!isWorker && (
+        <div className="card mb-4">
+          <div className="card-header d-flex justify-content-between align-items-center">
+            <h6 className="mb-0">Bank reconciliation</h6>
+            <Link to="/bank" className="small">
+              Open Bank
+            </Link>
+          </div>
+          <div className="card-body">
+            <div className="row g-3">
+              <div className="col-md-4">
+                <div className="fw-semibold mb-1">Payments</div>
+                <div className="small text-muted mb-1">
+                  Collected {formatCurrency(collected)} / {formatCurrency(orderTotal)}
+                  {remaining > 1 && (
+                    <span className="text-warning"> · remaining {formatCurrency(remaining)}</span>
+                  )}
+                  {remaining <= 1 && collected > 0 && (
+                    <span className="text-success"> · paid</span>
+                  )}
+                </div>
+                {paymentTxs.length === 0 ? (
+                  <div className="small text-muted">No customer payments tagged yet</div>
+                ) : (
+                  <ul className="list-unstyled small mb-0">
+                    {paymentTxs.map(t => (
+                      <li key={t.id}>
+                        {formatDate(t.occurredAt)} · {t.paymentKind} · {formatCurrency(t.amount)}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="col-md-4">
+                <div className="fw-semibold mb-1">Logistics</div>
+                <div className="small mb-1">
+                  {logisticsTxs.length === 0 ? (
+                    <span className="text-muted">No bank logistics tagged</span>
+                  ) : logisticsOk ? (
+                    <span className="badge text-bg-success">Reconciled</span>
+                  ) : (
+                    <span className="badge text-bg-warning">Amount differs / pending</span>
+                  )}
+                </div>
+                <div className="small text-muted">
+                  Shipment cost:{' '}
+                  {shipCostNum != null ? formatCurrency(shipCostNum) : '—'} · Bank:{' '}
+                  {formatCurrency(logisticsBankSum)}
+                </div>
+                {logisticsTxs.map(t => (
+                  <div key={t.id} className="small">
+                    {formatDate(t.occurredAt)} · {formatCurrency(t.amount)}
+                  </div>
+                ))}
+              </div>
+              <div className="col-md-4">
+                <div className="fw-semibold mb-1">Worker pay</div>
+                {workerPayTxs.length === 0 ? (
+                  <div className="small text-muted">No job payouts tagged</div>
+                ) : (
+                  <>
+                    <div className="small text-muted mb-1">Total {formatCurrency(workerPaySum)}</div>
+                    <ul className="list-unstyled small mb-0">
+                      {workerPayTxs.map(t => (
+                        <li key={t.id}>
+                          {formatDate(t.occurredAt)} · {formatCurrency(t.amount)}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Shipment Details */}
       {showShipment && (

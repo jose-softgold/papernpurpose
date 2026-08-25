@@ -22,6 +22,8 @@ import SettingsPage from '../pages/settings/SettingsPage'
 import AssistantPage from '../pages/assistant/AssistantPage'
 import ImportPage from '../pages/import/ImportPage'
 import MaterialDetail from '../pages/materials/MaterialDetail'
+import BankPage from '../pages/bank/BankPage'
+import ExpensePage from '../pages/expenses/ExpensePage'
 
 export default function AppRoutes() {
   return (
@@ -165,6 +167,22 @@ export default function AppRoutes() {
             <ReadRoute>
               <ReportsPage />
             </ReadRoute>
+          }
+        />
+        <Route
+          path="bank"
+          element={
+            <OwnerRoute>
+              <BankPage />
+            </OwnerRoute>
+          }
+        />
+        <Route
+          path="expenses"
+          element={
+            <OwnerRoute>
+              <ExpensePage />
+            </OwnerRoute>
           }
         />
         <Route

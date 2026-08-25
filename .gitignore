@@ -12,6 +12,8 @@ dist-ssr/
 .env
 .env.*
 !.env.example
+!functions/gmail.env.example
+functions/gmail.env.local
 
 # Logs
 logs/
@@ -21,7 +23,8 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 
-# Firebase emulator data
+# Firebase local cache / emulator data
+.firebase/
 emulator-data/
 firebase-export-*/
 

@@ -4,9 +4,12 @@ import { orderService } from './orders'
 import { productionService } from './production'
 import { customerService } from './customers'
 import { productService } from './products'
-import { OrderItem } from '../types'
+import { bankService, BankCashSummary } from './bank'
+import { OrderItem, BankTransaction } from '../types'
 import { formatDate } from '../utils/format'
 import { Timestamp } from 'firebase/firestore'
+
+export type { BankCashSummary }
 
 export interface SalesReportRow {
   date: string
@@ -43,6 +46,11 @@ export interface ProductionReportRow {
   quantity: number
   costPerUnit: number
   totalCost: number
+}
+
+export interface BankCashReport {
+  rows: BankTransaction[]
+  summary: BankCashSummary
 }
 
 async function fetchAllOrderItems(): Promise<OrderItem[]> {
@@ -105,7 +113,7 @@ export const reportService = {
     const validOrderIds = new Set(
       orders
         .filter(o => o.status !== 'CANCELLED' && inRange(o.orderDate, from, to))
-        .map(o => o.id)
+        .map(o => o.id),
     )
 
     const map: Record<string, ProductProfitabilityRow> = {}
@@ -175,5 +183,16 @@ export const reportService = {
         totalCost: p.totalMaterialCost,
       }))
       .sort((a, b) => b.date.localeCompare(a.date))
+  },
+
+  async getBankCashReport(from?: Date, to?: Date): Promise<BankCashReport> {
+    const all = await bankService.getAll({ max: 1000 })
+    const rows = all
+      .filter(t => {
+        if (!t.occurredAt) return !from && !to
+        return inRange(t.occurredAt, from, to)
+      })
+      .sort((a, b) => (b.occurredAt?.toMillis?.() ?? 0) - (a.occurredAt?.toMillis?.() ?? 0))
+    return { rows, summary: bankService.summarizeRange(rows) }
   },
 }

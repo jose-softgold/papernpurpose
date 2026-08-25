@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
-import { Material, Product, ProductVersion, InventoryTransaction } from '../../types'
+import React from 'react'
+import { Material, Product, ProductVersion, InventoryTransaction, OccasionSeason } from '../../types'
 import { inventoryService } from '../../services/inventory'
 import { materialService } from '../../services/materials'
 import { productService } from '../../services/products'
+import { occasionService } from '../../services/occasions'
 import { formatCurrency, formatDate } from '../../utils/format'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import PageHeader from '../../components/PageHeader'
@@ -87,6 +89,9 @@ export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([])
   const [productVersions, setProductVersions] = useState<ProductVersion[]>([])
   const [productStocks, setProductStocks] = useState<Record<string, number>>({})
+  const [productStocksBySeason, setProductStocksBySeason] = useState<Record<string, Record<string, number>>>({})
+  const [seasons, setSeasons] = useState<OccasionSeason[]>([])
+  const [expandedProductId, setExpandedProductId] = useState<string | null>(null)
 
   const [selectedItem, setSelectedItem] = useState<{ title: string; transactions: InventoryTransaction[] } | null>(null)
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -98,12 +103,16 @@ export default function InventoryPage() {
       productService.getAll(),
       productService.getAllVersions(),
       inventoryService.getProductStocks(),
-    ]).then(([mats, mStocks, prods, versions, pStocks]) => {
+      inventoryService.getProductStocksBySeason(),
+      occasionService.getAllSeasons(),
+    ]).then(([mats, mStocks, prods, versions, pStocks, pBySeason, allSeasons]) => {
       setMaterials(mats)
       setMaterialStocks(mStocks)
       setProducts(prods)
       setProductVersions(versions)
       setProductStocks(pStocks)
+      setProductStocksBySeason(pBySeason)
+      setSeasons(allSeasons)
     }).finally(() => setLoading(false))
   }, [])
 
@@ -124,6 +133,11 @@ export default function InventoryPage() {
   function getActiveVersion(productId: string): ProductVersion | undefined {
     const versions = productVersions.filter(v => v.productId === productId && v.status === 'active')
     return versions.at(0)
+  }
+
+  function seasonLabel(seasonId: string): string {
+    if (seasonId === inventoryService.unassignedSeasonKey) return 'Unassigned'
+    return seasons.find(s => s.id === seasonId)?.name ?? seasonId.slice(0, 8)
   }
 
   if (loading) return <LoadingSpinner />
@@ -216,22 +230,54 @@ export default function InventoryPage() {
                     <th>Product</th>
                     <th>Current Version</th>
                     <th>Current Stock</th>
+                    <th>By season</th>
                   </tr>
                 </thead>
                 <tbody>
                   {pageItems.map(prod => {
                     const version = getActiveVersion(prod.id)
                     const stock = productStocks[prod.id] ?? 0
+                    const bySeason = productStocksBySeason[prod.id] ?? {}
+                    const seasonEntries = Object.entries(bySeason).filter(([, qty]) => qty !== 0)
+                    const expanded = expandedProductId === prod.id
                     return (
+                      <React.Fragment key={prod.id}>
                       <tr
-                        key={prod.id}
                         style={{ cursor: 'pointer' }}
                         onClick={() => openProductHistory(prod)}
                       >
                         <td>{prod.name}</td>
                         <td>{version?.version ?? '—'}</td>
                         <td>{stock}</td>
+                        <td onClick={e => e.stopPropagation()}>
+                          {seasonEntries.length === 0 ? (
+                            <span className="text-muted small">—</span>
+                          ) : (
+                            <button
+                              type="button"
+                              className="btn btn-link btn-sm p-0"
+                              onClick={() => setExpandedProductId(expanded ? null : prod.id)}
+                            >
+                              {seasonEntries.length} pile{seasonEntries.length === 1 ? '' : 's'}
+                              {expanded ? ' ▲' : ' ▼'}
+                            </button>
+                          )}
+                        </td>
                       </tr>
+                      {expanded && seasonEntries.length > 0 && (
+                        <tr className="table-light">
+                          <td colSpan={4} className="py-2">
+                            <div className="d-flex flex-wrap gap-2 ps-3">
+                              {seasonEntries.map(([sid, qty]) => (
+                                <span key={sid} className="badge bg-white text-dark border">
+                                  {seasonLabel(sid)}: {qty}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     )
                   })}
                 </tbody>

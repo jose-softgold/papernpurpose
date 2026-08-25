@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "rules:check": "node scripts/rules-check.mjs",
-    "seed": "FIRESTORE_EMULATOR_HOST=localhost:8180 FIREBASE_AUTH_EMULATOR_HOST=localhost:9099 ts-node --project scripts/tsconfig.json scripts/seed.ts"
+    "seed": "FIRESTORE_EMULATOR_HOST=localhost:8180 FIREBASE_AUTH_EMULATOR_HOST=localhost:9099 ts-node --project scripts/tsconfig.json scripts/seed.ts",
+    "deploy:hosting": "firebase deploy --only hosting:app"
   },
   "dependencies": {
     "bootstrap": "^5.3.8",

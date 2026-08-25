@@ -6,6 +6,7 @@ import { storage } from '../../firebase/config'
 import { purchaseService } from '../../services/purchases'
 import { supplierService } from '../../services/suppliers'
 import { materialService } from '../../services/materials'
+import { bankService } from '../../services/bank'
 import { formatCurrency, formatDate } from '../../utils/format'
 import { lineTax } from '../../utils/tax'
 import { useToast } from '../../hooks/useToast'
@@ -17,7 +18,7 @@ import ToastContainer from '../../components/ToastContainer'
 import QuickSelect from '../../components/QuickSelect'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import { GstRateSelect } from '../../components/GstFields'
-import type { Purchase, Supplier, Material } from '../../types'
+import type { Purchase, Supplier, Material, BankTransaction } from '../../types'
 import { useAuth } from '../../hooks/useAuth'
 import { isWorker as roleIsWorker } from '../../utils/roles'
 
@@ -59,6 +60,7 @@ export default function PurchasePage() {
   const [history, setHistory] = useState<Purchase[]>([])
   const [historyLoading, setHistoryLoading] = useState(!isWorker)
   const [supplierMap, setSupplierMap] = useState<Record<string, Supplier>>({})
+  const [bankByPurchase, setBankByPurchase] = useState<Record<string, BankTransaction[]>>({})
 
   useEffect(() => {
     setItems([emptyItem()])
@@ -85,8 +87,19 @@ export default function PurchasePage() {
       return
     }
     setHistoryLoading(true)
-    purchaseService.getAll()
-      .then(setHistory)
+    purchaseService
+      .getAll()
+      .then(async rows => {
+        setHistory(rows)
+        const bankRows = await bankService.getAll({ max: 500 }).catch(() => [] as BankTransaction[])
+        const map: Record<string, BankTransaction[]> = {}
+        for (const t of bankRows) {
+          if (!t.purchaseId) continue
+          if (!map[t.purchaseId]) map[t.purchaseId] = []
+          map[t.purchaseId].push(t)
+        }
+        setBankByPurchase(map)
+      })
       .finally(() => setHistoryLoading(false))
   }, [isWorker])
 
@@ -412,18 +425,31 @@ export default function PurchasePage() {
                         <th>Materials</th>
                         <th>Total Qty</th>
                         <th>Total (₹)</th>
+                        <th>Bank</th>
                         <th>Bills</th>
                         <th>Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {pageItems.map(p => (
+                      {pageItems.map(p => {
+                        const paid = bankByPurchase[p.id] || []
+                        const paidSum = paid.reduce((s, t) => s + t.amount, 0)
+                        return (
                         <tr key={p.id}>
                           <td>{formatDate(p.purchaseDate)}</td>
                           <td>{supplierMap[p.supplierId]?.name ?? p.supplierId}</td>
                           <td>{p.itemCount ?? '—'}</td>
                           <td>{p.totalQty ?? '—'}</td>
                           <td>{formatCurrency(p.grandTotal ?? p.total)}</td>
+                          <td>
+                            {paid.length === 0 ? (
+                              <span className="small text-muted">—</span>
+                            ) : (
+                              <span className="badge text-bg-success" title={paid.map(t => t.description).join('; ')}>
+                                Paid {formatCurrency(paidSum)}
+                              </span>
+                            )}
+                          </td>
                           <td>
                             {p.billPhotoUrls?.length ? (
                               <button
@@ -443,7 +469,8 @@ export default function PurchasePage() {
                             </span>
                           </td>
                         </tr>
-                      ))}
+                        )
+                      })}
                     </tbody>
                   </>
                 )}

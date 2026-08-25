@@ -8,7 +8,8 @@ import { productService } from '../../services/products'
 import { customerService } from '../../services/customers'
 import { productionService } from '../../services/production'
 import { inventoryService } from '../../services/inventory'
-import { Order, OrderStatus, Customer, Product, ProductVersion, Production } from '../../types'
+import { occasionService } from '../../services/occasions'
+import { Order, OrderStatus, Customer, Product, ProductVersion, Production, Occasion, OccasionSeason } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
@@ -36,6 +37,7 @@ interface LineItem {
   unitPrice: string
   costPerUnit: string
   gstRate: string
+  occasionSeasonId: string
 }
 
 const emptyLine = (): LineItem => ({
@@ -45,6 +47,7 @@ const emptyLine = (): LineItem => ({
   unitPrice: '',
   costPerUnit: '',
   gstRate: '0',
+  occasionSeasonId: '',
 })
 
 interface NewOrderForm {
@@ -52,6 +55,7 @@ interface NewOrderForm {
   orderDate: string
   eventDate: string
   eventType: string
+  occasionId: string
   discount: string
   notes: string
 }
@@ -61,6 +65,7 @@ const emptyForm = (): NewOrderForm => ({
   orderDate: nowStr(),
   eventDate: '',
   eventType: '',
+  occasionId: '',
   discount: '0',
   notes: '',
 })
@@ -85,6 +90,8 @@ export default function OrderList() {
   const [allVersions, setAllVersions] = useState<ProductVersion[]>([])
   const [allProductions, setAllProductions] = useState<Production[]>([])
   const [productStocks, setProductStocks] = useState<Record<string, number>>({})
+  const [occasions, setOccasions] = useState<Occasion[]>([])
+  const [seasons, setSeasons] = useState<OccasionSeason[]>([])
 
   // Form state
   const [form, setForm] = useState<NewOrderForm>(emptyForm())
@@ -122,18 +129,22 @@ export default function OrderList() {
     setStep(1)
     setShowModal(true)
     try {
-      const [custs, prods, versions, prods2, stocks] = await Promise.all([
+      const [custs, prods, versions, prods2, stocks, occs, seas] = await Promise.all([
         customerService.getAll(),
         productService.getAll(),
         productService.getAllVersions(),
         productionService.getAll(),
         inventoryService.getProductStocks(),
+        occasionService.getActiveOccasions(),
+        occasionService.getAllSeasons(),
       ])
       setCustomers(custs)
       setProducts(prods)
       setAllVersions(versions)
       setAllProductions(prods2)
       setProductStocks(stocks)
+      setOccasions(occs)
+      setSeasons(seas.filter(s => s.status === 'active'))
     } catch {
       showToast('Failed to load reference data', 'danger')
     }
@@ -155,6 +166,26 @@ export default function OrderList() {
       return tb - ta
     })
     return runs[0].costPerUnit
+  }
+
+  const seasonsForOccasion = (occasionId: string) =>
+    seasons.filter(s => s.occasionId === occasionId)
+
+  const defaultSeasonForOccasion = (occasionId: string): string => {
+    const year = new Date().getFullYear()
+    const match = seasonsForOccasion(occasionId).find(s => s.year === year)
+    return match?.id ?? seasonsForOccasion(occasionId)[0]?.id ?? ''
+  }
+
+  const handleOccasionChange = (occasionId: string) => {
+    const occ = occasions.find(o => o.id === occasionId)
+    setForm(f => ({
+      ...f,
+      occasionId,
+      eventType: occ?.name ?? '',
+    }))
+    const seasonId = occasionId ? defaultSeasonForOccasion(occasionId) : ''
+    setLines(prev => prev.map(l => ({ ...l, occasionSeasonId: seasonId })))
   }
 
   const updateLine = (i: number, field: keyof LineItem, value: string) => {
@@ -197,6 +228,7 @@ export default function OrderList() {
         orderDate: toTs(form.orderDate),
         eventDate: form.eventDate ? toTs(form.eventDate) : null,
         eventType: form.eventType.trim(),
+        occasionId: form.occasionId || null,
         discount: parseFloat(form.discount) || 0,
         notes: form.notes.trim(),
         items: validLines.map(l => ({
@@ -206,6 +238,7 @@ export default function OrderList() {
           unitPrice: parseFloat(l.unitPrice) || 0,
           costPerUnit: parseFloat(l.costPerUnit) || 0,
           gstRate: parseFloat(l.gstRate) || 0,
+          occasionSeasonId: l.occasionSeasonId || null,
         })),
       })
       showToast('Order created')
@@ -357,8 +390,23 @@ export default function OrderList() {
                           />
                         </div>
                         <div className="col-md-6">
-                          <label className="form-label">Event Type</label>
-                          <input className="form-control" value={form.eventType} onChange={setField('eventType')} placeholder="e.g. Wedding, Birthday" />
+                          <label className="form-label">Occasion</label>
+                          <select
+                            className="form-select"
+                            value={form.occasionId}
+                            onChange={e => handleOccasionChange(e.target.value)}
+                          >
+                            <option value="">— Select or type below —</option>
+                            {occasions.map(o => (
+                              <option key={o.id} value={o.id}>{o.name}</option>
+                            ))}
+                          </select>
+                          <input
+                            className="form-control mt-2"
+                            value={form.eventType}
+                            onChange={setField('eventType')}
+                            placeholder="Event label (auto-filled from occasion)"
+                          />
                         </div>
                         <div className="col-md-6">
                           <label className="form-label">Order Date <span className="text-danger">*</span></label>
@@ -388,6 +436,7 @@ export default function OrderList() {
                                 <th>Product</th>
                                 <th>Version</th>
                                 <th style={{ width: 80 }}>Qty</th>
+                                <th>Season</th>
                                 <th style={{ width: 110 }}>Unit Price</th>
                                 <th style={{ width: 90 }}>GST</th>
                                 <th style={{ width: 100 }}>Cost/Unit</th>
@@ -439,6 +488,21 @@ export default function OrderList() {
                                       />
                                     </td>
                                     <td>
+                                      <select
+                                        className="form-select form-select-sm"
+                                        value={line.occasionSeasonId}
+                                        onChange={e => updateLine(i, 'occasionSeasonId', e.target.value)}
+                                      >
+                                        <option value="">Unassigned</option>
+                                        {(form.occasionId
+                                          ? seasonsForOccasion(form.occasionId)
+                                          : seasons
+                                        ).map(s => (
+                                          <option key={s.id} value={s.id}>{s.name}</option>
+                                        ))}
+                                      </select>
+                                    </td>
+                                    <td>
                                       <input
                                         type="number" min="0" step="0.01"
                                         className="form-control form-control-sm"
@@ -465,7 +529,7 @@ export default function OrderList() {
                                   </tr>
                                   {prod && (
                                     <tr className="table-light">
-                                      <td colSpan={8} className="py-1 px-3">
+                                      <td colSpan={9} className="py-1 px-3">
                                         <div className="d-flex flex-wrap gap-3 small text-muted">
                                           <span>
                                             <span className="fw-semibold text-dark">Stock: </span>
