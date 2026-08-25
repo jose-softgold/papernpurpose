@@ -186,7 +186,7 @@ Status changes are timestamped on the **Order Timeline**. At DISPATCHED you can 
    npm run build
    firebase deploy --only hosting:app
    ```
-   Multi-site targets live in `.firebaserc`: `app` → `paperpurpose-baecd`, `www` → `paperpurpose-site` (marketing site repo).
+   The public marketing site is a separate repo ([papernpurpose-site](https://github.com/jose-softgold/papernpurpose-site)) and deploys to Hosting target `www`.
 
 ---
 

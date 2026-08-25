@@ -5,8 +5,7 @@
   "targets": {
     "paperpurpose-baecd": {
       "hosting": {
-        "app": ["paperpurpose-baecd"],
-        "www": ["paperpurpose-site"]
+        "app": ["paperpurpose-baecd"]
       }
     }
   }
