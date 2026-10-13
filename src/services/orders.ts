@@ -400,12 +400,16 @@ export const orderService = {
     cost: number
     photoUrls: string[]
     bankTransactionId?: string | null
+    paidById?: string
+    paidByName?: string
   }): Promise<void> {
     const patch: Record<string, unknown> = {
       'shipment.logisticsCompany': data.logisticsCompany,
       'shipment.trackingId': data.trackingId,
       'shipment.cost': data.cost,
       'shipment.photoUrls': data.photoUrls,
+      'shipment.paidById': data.paidById ?? '',
+      'shipment.paidByName': data.paidByName ?? '',
       'shipment.updatedAt': serverTimestamp(),
       updatedAt: serverTimestamp(),
     }

@@ -76,10 +76,12 @@ export default function OrderDetail() {
   const [loading, setLoading] = useState(true)
   const [transitioning, setTransitioning] = useState(false)
   const [showCancel, setShowCancel] = useState(false)
-  const { role, user } = useAuth()
+  const { role, user, userDoc } = useAuth()
   const isWorker = roleIsWorker(role)
   const canAssign = isAdminOrOwner(role)
   const [workers, setWorkers] = useState<WorkerOption[]>([])
+  const [payers, setPayers] = useState<WorkerOption[]>([])
+  const [shipPaidById, setShipPaidById] = useState('')
   const [assignedIds, setAssignedIds] = useState<string[]>([])
   const [savingAssign, setSavingAssign] = useState(false)
 
@@ -133,6 +135,7 @@ export default function OrderDetail() {
       setShipTracking(o.shipment?.trackingId ?? '')
       setShipCost(o.shipment?.cost != null ? String(o.shipment.cost) : '')
       setShipExistingUrls(o.shipment?.photoUrls ?? [])
+      setShipPaidById(o.shipment?.paidById ?? '')
 
       const prodMap = Object.fromEntries(products.map(p => [p.id, p.name]))
       const verMap = Object.fromEntries(versions.map(v => [v.id, v.version]))
@@ -168,6 +171,13 @@ export default function OrderDetail() {
   useEffect(() => {
     if (canAssign) usersService.listWorkers().then(setWorkers).catch(() => {})
   }, [canAssign])
+  useEffect(() => {
+    const self: WorkerOption[] = user ? [{ id: user.uid, name: userDoc?.name?.trim() || user.email || 'You', email: user.email || '' }] : []
+    if (isWorker) { setPayers(self); return }
+    usersService.listActive()
+      .then(list => setPayers([...list].sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => setPayers(self))
+  }, [isWorker, user, userDoc])
 
   const handleTransition = async (next: OrderStatus) => {
     if (!id) return
@@ -218,6 +228,8 @@ export default function OrderDetail() {
         cost: isWorker ? (order?.shipment?.cost ?? 0) : (parseFloat(shipCost) || 0),
         photoUrls,
         bankTransactionId: order?.shipment?.bankTransactionId ?? null,
+        paidById: shipPaidById,
+        paidByName: payers.find(p => p.id === shipPaidById)?.name ?? order?.shipment?.paidByName ?? '',
       })
       showToast('Shipment details saved', 'success')
       setShipPhotos([])
@@ -249,7 +261,7 @@ export default function OrderDetail() {
   const totalProfit = items.reduce((s, i) => s + i.profit, 0)
 
   const currentIdx = STATUS_ORDER.indexOf(order.status)
-  const showShipment = ['DISPATCHED', 'DELIVERED', 'COMPLETED'].includes(order.status)
+  const showShipment = ['CONFIRMED', 'IN_PRODUCTION', 'READY', 'DISPATCHED', 'DELIVERED', 'COMPLETED'].includes(order.status)
   const shipmentReadOnly = order.status === 'COMPLETED'
   const canEditAssignment = canAssign && order.status === 'IN_PRODUCTION'
   const hasAssignment = (order.assignedWorkerNames ?? []).length > 0
@@ -715,6 +727,10 @@ export default function OrderDetail() {
                     <span>{order.shipment?.cost != null ? formatCurrency(order.shipment.cost) : '—'}</span>
                   </div>
                 )}
+                <div className="col-md-4">
+                  <small className="text-muted d-block">Paid by</small>
+                  <span>{order.shipment?.paidByName || '—'}</span>
+                </div>
                 {order.shipment?.photoUrls?.length ? (
                   <div className="col-12">
                     <small className="text-muted d-block mb-1">Photos</small>
@@ -763,6 +779,16 @@ export default function OrderDetail() {
                     />
                   </div>
                 )}
+                <div className="col-md-4">
+                  <label className="form-label">Paid by</label>
+                  <select className="form-select" value={shipPaidById} onChange={e => setShipPaidById(e.target.value)}>
+                    <option value="">Not recorded</option>
+                    {shipPaidById && !payers.some(p => p.id === shipPaidById) && (
+                      <option value={shipPaidById}>{order.shipment?.paidByName || 'Saved payer'}</option>
+                    )}
+                    {payers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
                 <div className="col-12">
                   <label className="form-label">Photos</label>
                   <input
@@ -891,6 +917,18 @@ export default function OrderDetail() {
                   <span>Total Profit</span>
                   <span>{formatCurrency(totalProfit)}</span>
                 </div>
+                {shipCostNum != null && shipCostNum > 0 && (
+                  <>
+                    <div className="d-flex justify-content-between text-muted small mt-1">
+                      <span>Shipping</span>
+                      <span>−{formatCurrency(shipCostNum)}</span>
+                    </div>
+                    <div className={`d-flex justify-content-between small fw-semibold ${totalProfit - shipCostNum < 0 ? 'text-danger' : 'text-success'}`}>
+                      <span>Profit after shipping</span>
+                      <span>{formatCurrency(totalProfit - shipCostNum)}</span>
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>

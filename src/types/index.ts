@@ -189,6 +189,8 @@ export interface Shipment {
   photoUrls?: string[]
   /** Linked bank debit when logistics was tagged from Bank */
   bankTransactionId?: string | null
+  paidById?: string
+  paidByName?: string
   updatedAt?: Timestamp
 }
 
@@ -311,6 +313,21 @@ export interface Purchase {
   notes: string
   createdAt: Timestamp
   billPhotoUrls?: string[]
+  /** Delivery from the supplier; never adds stock. */
+  logistics?: PurchaseLogistics | null
+  /** Delivery amount including GST; already part of grandTotal. */
+  logisticsTotal?: number
+}
+
+export interface PurchaseLogistics {
+  mode: string
+  /** Taxable amount */
+  amount: number
+  gstRate: number
+  gstAmount: number
+  paidById?: string
+  paidByName?: string
+  photoUrls?: string[]
 }
 
 export interface PurchaseItem {
@@ -319,6 +336,8 @@ export interface PurchaseItem {
   materialId: string
   quantity: number
   unitCost: number
+  /** unitCost plus this line's share of the purchase delivery charge */
+  landedUnitCost?: number
   total: number
   gstRate?: number
   taxableAmount?: number

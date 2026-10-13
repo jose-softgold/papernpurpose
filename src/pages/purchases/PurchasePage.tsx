@@ -3,12 +3,11 @@ import { Timestamp } from 'firebase/firestore'
 import { Link } from 'react-router-dom'
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
-import { purchaseService } from '../../services/purchases'
+import { purchaseService, pricePurchase } from '../../services/purchases'
 import { usersService } from '../../services/users'
 import { supplierService } from '../../services/suppliers'
 import { materialService } from '../../services/materials'
 import { formatCurrency, formatDate } from '../../utils/format'
-import { lineTax } from '../../utils/tax'
 import { useToast } from '../../hooks/useToast'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import EmptyState from '../../components/EmptyState'
@@ -45,6 +44,19 @@ const emptyItem = (gstRate = 0): LineItem => ({ materialId: '', quantity: '1', u
 
 type PurchaserOption = WorkerOption & { role: UserRole }
 
+interface DeliveryForm {
+  mode: string
+  amount: string
+  gstRate: number
+  /** Empty means the same person who paid the supplier. */
+  paidById: string
+  photoUrls: string[]
+}
+
+const emptyDelivery = (): DeliveryForm => ({ mode: '', amount: '', gstRate: 0, paidById: '', photoUrls: [] })
+
+const DELIVERY_MODES = ['Porter', 'DTDC', 'Rapido', 'Self', 'Other']
+
 export default function PurchasePage() {
   const { toasts, showToast } = useToast()
   const { user, userDoc, role } = useAuth()
@@ -61,6 +73,9 @@ export default function PurchasePage() {
   const [items, setItems] = useState<LineItem[]>([emptyItem()])
   const [billPhotos, setBillPhotos] = useState<File[]>([])
   const [existingBillUrls, setExistingBillUrls] = useState<string[]>([])
+  const [delivery, setDelivery] = useState<DeliveryForm>(emptyDelivery())
+  const [deliveryPhotos, setDeliveryPhotos] = useState<File[]>([])
+  const deliveryFileRef = useRef<HTMLInputElement>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [loadingEdit, setLoadingEdit] = useState(false)
   const [deleting, setDeleting] = useState<Purchase | null>(null)
@@ -181,10 +196,19 @@ export default function PurchasePage() {
     setItems(prev => prev.filter((_, i) => i !== index))
   }
 
-  const taxLines = items.map(i => lineTax(parseFloat(i.quantity) || 0, i.unitCost, i.gstRate))
-  const taxableSubtotal = taxLines.reduce((s, l) => s + l.taxableAmount, 0)
-  const gstTotal = taxLines.reduce((s, l) => s + l.gstAmount, 0)
-  const grandTotal = taxableSubtotal + gstTotal
+  const {
+    taxLines,
+    taxableSubtotal,
+    gstTotal,
+    materialsTotal,
+    logisticsTotal,
+    grandTotal,
+    landedUnitCosts,
+  } = pricePurchase(
+    items.map(i => ({ quantity: parseFloat(i.quantity) || 0, unitCost: i.unitCost, gstRate: i.gstRate })),
+    { mode: delivery.mode, amount: parseFloat(delivery.amount) || 0, gstRate: delivery.gstRate },
+  )
+  const deliveryAmount = parseFloat(delivery.amount) || 0
   const canSubmit = supplierId && purchasedById && items.length > 0 && items.every(i => i.materialId && parseFloat(i.quantity) > 0)
   const formRef = useRef<HTMLDivElement>(null)
 
@@ -198,6 +222,9 @@ export default function PurchasePage() {
     setBillPhotos([])
     setExistingBillUrls([])
     if (fileRef.current) fileRef.current.value = ''
+    setDelivery(emptyDelivery())
+    setDeliveryPhotos([])
+    if (deliveryFileRef.current) deliveryFileRef.current.value = ''
   }
 
   const startEdit = async (p: Purchase) => {
@@ -212,6 +239,18 @@ export default function PurchasePage() {
       setExistingBillUrls(p.billPhotoUrls ?? [])
       setBillPhotos([])
       if (fileRef.current) fileRef.current.value = ''
+      const log = p.logistics
+      setDelivery(log
+        ? {
+            mode: log.mode || '',
+            amount: log.amount ? String(log.amount) : '',
+            gstRate: Number(log.gstRate ?? 0),
+            paidById: log.paidById && log.paidById !== p.purchasedById ? log.paidById : '',
+            photoUrls: log.photoUrls ?? [],
+          }
+        : emptyDelivery())
+      setDeliveryPhotos([])
+      if (deliveryFileRef.current) deliveryFileRef.current.value = ''
       setItems(lines.length
         ? lines.map(line => ({
             materialId: line.materialId,
@@ -262,8 +301,18 @@ export default function PurchasePage() {
           }))
         : []
       const billPhotoUrls = [...existingBillUrls, ...uploaded]
+      const deliveryUploaded = deliveryPhotos.length
+        ? await Promise.all(deliveryPhotos.map(async file => {
+            const tmpId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
+            const sRef = storageRef(storage, `purchases/${editingId ?? 'pending'}/delivery-${tmpId}-${file.name}`)
+            await uploadBytes(sRef, file)
+            return getDownloadURL(sRef)
+          }))
+        : []
 
       const buyer = purchaserOptions.find(u => u.id === purchasedById)
+      const deliveryPayerId = delivery.paidById || purchasedById
+      const deliveryPayer = purchaserOptions.find(u => u.id === deliveryPayerId)
       const payload = {
         supplierId,
         purchasedById,
@@ -278,6 +327,15 @@ export default function PurchasePage() {
           unit: materialMap[i.materialId]?.unit ?? '',
           gstRate: i.gstRate,
         })),
+        updateMaterialCosts: canManage,
+        logistics: {
+          mode: delivery.mode,
+          amount: deliveryAmount,
+          gstRate: delivery.gstRate,
+          paidById: deliveryPayerId,
+          paidByName: deliveryPayer?.name || buyer?.name || userDoc?.name || '',
+          photoUrls: [...delivery.photoUrls, ...deliveryUploaded],
+        },
       }
       if (editingId) {
         await purchaseService.update(editingId, payload)
@@ -481,7 +539,12 @@ export default function PurchasePage() {
                             onChange={rate => updateItem(idx, { gstRate: rate })}
                           />
                         </td>
-                      <td>{formatCurrency(taxLines[idx].lineTotal)}</td>
+                      <td>
+                        {formatCurrency(taxLines[idx].lineTotal)}
+                        {deliveryAmount > 0 && item.materialId && (
+                          <div className="small text-muted">{formatCurrency(landedUnitCosts[idx])}/unit with delivery</div>
+                        )}
+                      </td>
                       <td>
                         <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeItem(idx)} disabled={items.length === 1}>✕</button>
                       </td>
@@ -509,8 +572,85 @@ export default function PurchasePage() {
               </button>
               <div className="text-end">
                 <div className="small text-muted">Taxable {formatCurrency(taxableSubtotal)} · GST {formatCurrency(gstTotal)}</div>
-                <div className="fw-bold">Grand total {formatCurrency(grandTotal)}</div>
+                <div className="small">Materials {formatCurrency(materialsTotal)}</div>
               </div>
+            </div>
+
+            <h6 className="mb-2">Delivery / logistics</h6>
+            <div className="row g-3 mb-2">
+              <div className="col-md-3">
+                <label className="form-label">Mode / company</label>
+                <input
+                  className="form-control"
+                  list="delivery-mode-options"
+                  value={delivery.mode}
+                  onChange={e => setDelivery(d => ({ ...d, mode: e.target.value }))}
+                  placeholder="e.g. Porter"
+                />
+                <datalist id="delivery-mode-options">
+                  {DELIVERY_MODES.map(m => <option key={m} value={m} />)}
+                </datalist>
+              </div>
+              <div className="col-md-3">
+                <label className="form-label">Amount (₹, taxable)</label>
+                <input
+                  type="number"
+                  className="form-control"
+                  min={0}
+                  step="0.01"
+                  value={delivery.amount}
+                  onChange={e => setDelivery(d => ({ ...d, amount: e.target.value }))}
+                  placeholder="0"
+                />
+              </div>
+              <div className="col-md-2">
+                <GstRateSelect value={delivery.gstRate} onChange={rate => setDelivery(d => ({ ...d, gstRate: rate }))} />
+              </div>
+              <div className="col-md-4">
+                <QuickSelect
+                  label="Delivery paid by"
+                  value={delivery.paidById}
+                  onChange={id => setDelivery(d => ({ ...d, paidById: id }))}
+                  placeholder="Same as purchase"
+                  options={purchaserOptions.map(u => ({
+                    id: u.id,
+                    label: `${u.name} · ${ROLE_LABELS[u.role]}`,
+                  }))}
+                />
+              </div>
+              <div className="col-12">
+                <label className="form-label">Delivery receipt</label>
+                {delivery.photoUrls.length > 0 && (
+                  <div className="d-flex flex-wrap gap-2 mb-2">
+                    {delivery.photoUrls.map((url, i) => (
+                      <span key={url} className="badge text-bg-light border">
+                        Receipt {i + 1}
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-link p-0 ms-1"
+                          onClick={() => setDelivery(d => ({ ...d, photoUrls: d.photoUrls.filter(u => u !== url) }))}
+                        >
+                          Remove
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  ref={deliveryFileRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="form-control"
+                  onChange={e => setDeliveryPhotos(e.target.files ? Array.from(e.target.files) : [])}
+                />
+                <div className="form-text">Delivery does not add stock. It is shared across the lines by value and added to each material's cost.</div>
+              </div>
+            </div>
+
+            <div className="text-end mb-3">
+              {logisticsTotal > 0 && <div className="small">Delivery {formatCurrency(logisticsTotal)}</div>}
+              <div className="fw-bold">Grand total {formatCurrency(grandTotal)}</div>
             </div>
 
             <div className="pc-sticky-submit">
@@ -569,6 +709,7 @@ export default function PurchasePage() {
                         <th>Supplier</th>
                         <th>Paid by</th>
                         <th>Total (₹)</th>
+                        <th>Delivery</th>
                         <th>Materials</th>
                         <th>Total Qty</th>
                         <th></th>
@@ -585,6 +726,11 @@ export default function PurchasePage() {
                           <td>{supplierMap[p.supplierId]?.name ?? p.supplierId}</td>
                           <td>{p.purchasedByName || '—'}</td>
                           <td>{formatCurrency(total)}</td>
+                          <td>
+                            {p.logisticsTotal
+                              ? <>{formatCurrency(p.logisticsTotal)}{p.logistics?.mode ? <div className="small text-muted">{p.logistics.mode}</div> : null}</>
+                              : '—'}
+                          </td>
                           <td>{p.itemCount ?? '—'}</td>
                           <td>{p.totalQty ?? '—'}</td>
                           <td>

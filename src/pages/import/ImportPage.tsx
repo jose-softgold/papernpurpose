@@ -104,6 +104,8 @@ const TEMPLATES: Record<ImportKind, Record<string, unknown>> = {
     qty: 100,
     'unit cost': 18,
     'gst rate': 12,
+    delivery: 150,
+    'delivery mode': 'Porter',
     notes: 'Missed bill from August',
   },
   orders: {
@@ -150,7 +152,7 @@ const HINTS: Record<ImportKind, string> = {
   suppliers: 'Columns: name, type, phone, email, city, address, gstin, company name, contact person, notes.',
   materials: 'Columns: name, category, unit, color/spec, minimum stock, cost per unit, gst rate, hsn, supplier, notes/description. Missing suppliers are created.',
   products: 'Columns: name, category, description, selling price, gst rate, hsn, version, notes. A version is created if missing (default V1).',
-  purchases: 'Columns: supplier, purchase date, material, qty, unit cost, gst rate, notes. Rows with the same supplier + date become one purchase. Missing suppliers/materials are created.',
+  purchases: 'Columns: supplier, purchase date, material, qty, unit cost, gst rate, notes, and optional delivery + delivery mode. Rows with the same supplier + date become one purchase; put the delivery amount on one row of that bill. Missing suppliers/materials are created.',
   orders: 'Columns: customer name, phone, order date, event date, event type, product name, qty, unit price, notes. Rows with the same customer + dates become one order. Missing customers/products are created.',
   bom: 'Columns: product, version, material, qty, unit. Links a material into a product version recipe. Missing materials/products/versions are created.',
   production: 'Columns: product, version, expected qty, actual qty, date, notes. Completes a batch and updates stock from the BOM. Product must already have a BOM.',
@@ -577,6 +579,8 @@ function mapPurchase(r: Record<string, string>, row: number, cat: Catalog): Prev
       gstRate,
       notes: cell(r, 'notes', 'note'),
       purchaseDate: cell(r, 'purchase date', 'date'),
+      delivery: Number(cell(r, 'delivery', 'delivery amount', 'logistics', 'transport') || 0),
+      deliveryMode: cell(r, 'delivery mode', 'logistics company', 'courier'),
     },
   }
   if (!supplierName) out.error = 'Supplier required'
@@ -919,11 +923,16 @@ async function commitKind(kind: ImportKind, rows: PreviewRow[], onProgress: (n: 
         })
         onProgress(++n)
       }
+      const deliveryRow = group.find(row => Number(row.data.delivery) > 0)?.data
       await purchaseService.complete({
         supplierId,
         purchaseDate: Timestamp.fromDate(parseDate(String(first.purchaseDate)) ?? new Date()),
         notes: String(first.notes ?? 'Bulk import'),
         items,
+        updateMaterialCosts: true,
+        logistics: deliveryRow
+          ? { mode: String(deliveryRow.deliveryMode ?? ''), amount: Number(deliveryRow.delivery), gstRate: 0 }
+          : null,
       })
     }
     return n
