@@ -85,12 +85,16 @@ export const orderService = {
   /**
    * Orders that can be linked to a production batch.
    * Workers must pass their uid so the query is assignment-gated (unassigned docs are not readable).
+   * Workers cannot read QUOTED orders (Firestore rules), so their status set excludes it.
    */
   async listForProductionLink(assignedToUid?: string): Promise<{
     orders: Order[]
     itemsByOrderId: Record<string, OrderItem[]>
   }> {
-    const orders = await orderService.getAll(['CONFIRMED', 'IN_PRODUCTION'], assignedToUid)
+    const statuses: OrderStatus[] = assignedToUid
+      ? ['CONFIRMED', 'IN_PRODUCTION', 'READY']
+      : ['QUOTED', 'CONFIRMED', 'IN_PRODUCTION', 'READY']
+    const orders = await orderService.getAll(statuses, assignedToUid)
     const visible = assignedToUid
       ? orders.filter(o => (o.assignedWorkerIds ?? []).includes(assignedToUid))
       : orders
@@ -181,6 +185,81 @@ export const orderService = {
       after: { customerId: data.customerId, grandTotal, itemCount: data.items.length },
     })
     return orderRef.id
+  },
+
+  async update(id: string, data: {
+    customerId: string
+    orderDate: Timestamp
+    eventDate: Timestamp | null
+    eventType: string
+    occasionId?: string | null
+    discount: number
+    notes: string
+    items: Array<{
+      productId: string
+      productVersionId: string
+      quantity: number
+      unitPrice: number
+      costPerUnit: number
+      gstRate?: number
+      occasionSeasonId?: string | null
+    }>
+  }): Promise<void> {
+    const existing = await orderService.getItems(id)
+    const taxLines = data.items.map(i => lineTax(i.quantity, i.unitPrice, i.gstRate ?? 0))
+    const taxableSubtotal = roundMoney(taxLines.reduce((s, l) => s + l.taxableAmount, 0))
+    const gstTotal = roundMoney(taxLines.reduce((s, l) => s + l.gstAmount, 0))
+    const subtotal = taxableSubtotal
+    const grandTotal = roundMoney(taxableSubtotal + gstTotal - data.discount)
+    const total = grandTotal
+
+    const batch = writeBatch(db)
+    batch.update(doc(db, 'orders', id), {
+      customerId: data.customerId,
+      orderDate: data.orderDate,
+      eventDate: data.eventDate,
+      eventType: data.eventType,
+      occasionId: data.occasionId ?? null,
+      subtotal,
+      discount: data.discount,
+      total,
+      taxableSubtotal,
+      gstTotal,
+      grandTotal,
+      notes: data.notes,
+      updatedAt: serverTimestamp(),
+    })
+
+    existing.forEach(item => batch.delete(doc(db, 'orderItems', item.id)))
+    data.items.forEach((item, idx) => {
+      const tax = taxLines[idx]
+      const totalPrice = tax.lineTotal
+      const totalCost = item.quantity * item.costPerUnit
+      const itemRef = doc(collection(db, 'orderItems'))
+      batch.set(itemRef, {
+        orderId: id,
+        productId: item.productId,
+        productVersionId: item.productVersionId,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+        totalPrice,
+        costPerUnit: item.costPerUnit,
+        totalCost,
+        profit: totalPrice - totalCost,
+        gstRate: item.gstRate ?? 0,
+        taxableAmount: tax.taxableAmount,
+        gstAmount: tax.gstAmount,
+        occasionSeasonId: item.occasionSeasonId ?? null,
+      })
+    })
+
+    await batch.commit()
+    await auditService.log({
+      action: 'order.update',
+      entityType: 'order',
+      entityId: id,
+      after: { customerId: data.customerId, grandTotal, itemCount: data.items.length },
+    })
   },
 
   async updateStatus(id: string, status: OrderStatus): Promise<void> {

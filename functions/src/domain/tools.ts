@@ -211,7 +211,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'create_material',
-    description: 'Create a material. Unit defaults to pcs; cost and GST are optional.',
+    description: 'Create a material. Unit defaults to pcs; cost, GST, color spec, and description are optional.',
     parameters: {
       type: 'object',
       properties: {
@@ -221,6 +221,9 @@ export const TOOL_DEFINITIONS = [
         gstRate: { type: 'number' },
         supplierId: { type: 'string' },
         hsnSac: { type: 'string' },
+        category: { type: 'string' },
+        colorSpec: { type: 'string', description: 'Color or finish, e.g. Pink, Gold foil' },
+        notes: { type: 'string', description: 'Description / notes' },
       },
       required: ['name'],
     },
@@ -890,12 +893,13 @@ async function executeTool(
       requireOps(actor)
       const ref = await db.collection('materials').add({
         name: String(args.name),
-        category: '',
+        category: String(args.category ?? ''),
         unit: String(args.unit ?? 'pcs'),
         minimumStock: 0,
         costPerUnit: Number(args.costPerUnit ?? 0),
         supplierId: String(args.supplierId ?? ''),
-        notes: '',
+        notes: String(args.notes ?? ''),
+        colorSpec: String(args.colorSpec ?? ''),
         status: 'active',
         gstRate: Number(args.gstRate ?? 0),
         hsnSac: String(args.hsnSac ?? ''),
@@ -990,7 +994,16 @@ async function executeTool(
       }
       if (!Number.isFinite(maxBuildable)) maxBuildable = 0
       const gstRate = Number(product.gstRate ?? 0)
-      const suggestedTaxableSell = costPerUnit > 0 ? round2(costPerUnit / 0.7) : Number(product.defaultSellingPrice ?? 0)
+      const pricingSnap = await db.collection('meta').doc('pricing').get()
+      const globalMargin = Number(pricingSnap.data()?.targetMarginPct ?? 30)
+      const productMargin = product.targetMarginPct
+      const rawMargin = productMargin != null && productMargin !== ''
+        ? Number(productMargin)
+        : globalMargin
+      const marginPct = Number.isFinite(rawMargin) ? Math.min(99, Math.max(0, rawMargin)) : 30
+      const suggestedTaxableSell = costPerUnit > 0
+        ? round2(marginPct >= 100 ? costPerUnit : costPerUnit / (1 - marginPct / 100))
+        : Number(product.defaultSellingPrice ?? 0)
       const gstAmount = round2(suggestedTaxableSell * (gstRate / 100))
       const productions = await db.collection('productions').where('productId', '==', productId).get()
       let expected = 0

@@ -76,6 +76,9 @@ export default function EntityQuickCreate({
   const [error, setError] = useState('')
   const [party, setParty] = useState(emptyParty)
   const [name, setName] = useState('')
+  const [category, setCategory] = useState('')
+  const [colorSpec, setColorSpec] = useState('')
+  const [notes, setNotes] = useState('')
   const [unit, setUnit] = useState('pcs')
   const [costPerUnit, setCostPerUnit] = useState('0')
   const [gstRate, setGstRate] = useState(0)
@@ -95,6 +98,9 @@ export default function EntityQuickCreate({
   const reset = () => {
     setParty(emptyParty)
     setName('')
+    setCategory('')
+    setColorSpec('')
+    setNotes('')
     setUnit('pcs')
     setCostPerUnit('0')
     setGstRate(0)
@@ -129,30 +135,24 @@ export default function EntityQuickCreate({
         const id = await customerService.create(payload)
         onCreated({ kind: 'customer', entity: { id, ...payload, ...stubTimestamps } })
       } else {
-        const id = await materialService.create({
+        const payload = {
           name: name.trim(),
-          category: '',
+          category: category.trim(),
           unit: unit.trim() || 'pcs',
           minimumStock: 0,
           costPerUnit: hideCost ? 0 : parseFloat(costPerUnit) || 0,
           supplierId: '',
-          notes: '',
-          status: 'active',
+          notes: notes.trim(),
+          colorSpec: colorSpec.trim(),
+          status: 'active' as const,
           gstRate,
-        })
+        }
+        const id = await materialService.create(payload)
         onCreated({
           kind: 'material',
           entity: {
             id,
-            name: name.trim(),
-            category: '',
-            unit: unit.trim() || 'pcs',
-            minimumStock: 0,
-            costPerUnit: hideCost ? 0 : parseFloat(costPerUnit) || 0,
-            supplierId: '',
-            notes: '',
-            status: 'active',
-            gstRate,
+            ...payload,
             ...stubTimestamps,
           },
         })
@@ -326,8 +326,31 @@ export default function EntityQuickCreate({
                       <input className="form-control" value={name} onChange={e => setName(e.target.value)} autoFocus required />
                     </div>
                     <div className="mb-3">
+                      <label className="form-label">Category</label>
+                      <input className="form-control" value={category} onChange={e => setCategory(e.target.value)} placeholder="Paper, Ribbon…" />
+                    </div>
+                    <div className="mb-3">
+                      <label className="form-label">Color / spec</label>
+                      <input className="form-control" value={colorSpec} onChange={e => setColorSpec(e.target.value)} placeholder="e.g. Pink, Gold foil" />
+                    </div>
+                    <div className="mb-3">
                       <label className="form-label">Unit</label>
-                      <input className="form-control" value={unit} onChange={e => setUnit(e.target.value)} placeholder="kg, pcs, m" />
+                      <input
+                        className="form-control"
+                        value={unit}
+                        onChange={e => setUnit(e.target.value)}
+                        list="eqc-material-units"
+                        placeholder="kg, pcs, sheets, m"
+                      />
+                      <datalist id="eqc-material-units">
+                        <option value="pcs" />
+                        <option value="sheets" />
+                        <option value="kg" />
+                        <option value="m" />
+                        <option value="ml" />
+                        <option value="grams" />
+                      </datalist>
+                      <div className="form-text">Use a unit name (pcs, sheets), not a quantity.</div>
                     </div>
                     {!hideCost && (
                       <div className="mb-3">
@@ -336,10 +359,14 @@ export default function EntityQuickCreate({
                       </div>
                     )}
                     {!hideCost && (
-                      <div className="mb-0">
+                      <div className="mb-3">
                         <GstRateSelect value={gstRate} onChange={setGstRate} />
                       </div>
                     )}
+                    <div className="mb-0">
+                      <label className="form-label">Description</label>
+                      <textarea className="form-control" rows={2} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional details" />
+                    </div>
                   </>
                 )}
               </div>

@@ -15,6 +15,7 @@ import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { formatCurrency } from '../../utils/format'
 import { exportToCSV } from '../../utils/export'
+import { GstRateSelect } from '../../components/GstFields'
 import { useAuth } from '../../hooks/useAuth'
 import { canWriteMaster } from '../../utils/roles'
 
@@ -27,7 +28,6 @@ interface AddProductForm {
   name: string
   category: string
   description: string
-  defaultSellingPrice: string
   gstRate: string
   hsnSac: string
 }
@@ -37,7 +37,7 @@ interface AddVersionForm {
   description: string
 }
 
-const emptyProductForm: AddProductForm = { name: '', category: '', description: '', defaultSellingPrice: '', gstRate: '0', hsnSac: '' }
+const emptyProductForm: AddProductForm = { name: '', category: '', description: '', gstRate: '0', hsnSac: '' }
 const emptyVersionForm: AddVersionForm = { version: 'V1', description: '' }
 
 export default function ProductList() {
@@ -98,7 +98,7 @@ export default function ProductList() {
         name: productForm.name.trim(),
         category: productForm.category.trim(),
         description: productForm.description.trim(),
-        defaultSellingPrice: parseFloat(productForm.defaultSellingPrice) || 0,
+        defaultSellingPrice: 0,
         gstRate: parseFloat(productForm.gstRate) || 0,
         hsnSac: productForm.hsnSac.trim(),
         status: 'active',
@@ -237,7 +237,7 @@ export default function ProductList() {
                     <th>Occasions</th>
                     <th>Current Version</th>
                     <th>Stock</th>
-                    <th>Default Price</th>
+                    <th>Unit Price</th>
                     <th>Status</th>
                     <th>Actions</th>
                   </tr>
@@ -305,14 +305,7 @@ export default function ProductList() {
                       <textarea className="form-control" rows={2} value={productForm.description} onChange={setProductField('description')} />
                     </div>
                     <div className="mb-3">
-                      <label className="form-label">Default Selling Price (₹)</label>
-                      <input className="form-control" type="number" min="0" step="0.01" value={productForm.defaultSellingPrice} onChange={setProductField('defaultSellingPrice')} />
-                    </div>
-                    <div className="mb-3">
-                      <label className="form-label">GST rate</label>
-                      <select className="form-select" value={productForm.gstRate} onChange={setProductField('gstRate')}>
-                        {[0, 5, 12, 18, 28].map(r => <option key={r} value={r}>{r}%</option>)}
-                      </select>
+                      <GstRateSelect value={productForm.gstRate} onChange={rate => setProductForm(f => ({ ...f, gstRate: String(rate) }))} />
                     </div>
                     <div className="mb-3">
                       <label className="form-label">HSN / SAC</label>

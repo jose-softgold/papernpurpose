@@ -560,6 +560,69 @@ export const bankService = {
     return { id: ref.id, skipped: false }
   },
 
+  /** Cash/UPI etc. recorded on an order without bank-alert tagging. */
+  async createManualCustomerPayment(params: {
+    orderId: string
+    amount: number
+    paymentKind: BankPaymentKind
+    occurredAt: Date
+    notes?: string
+  }): Promise<string> {
+    const orderId = params.orderId.trim()
+    if (!orderId) throw new Error('Order is required')
+    const amount = Math.abs(Number(params.amount))
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0')
+    const paymentKind: BankPaymentKind = params.paymentKind === 'final' ? 'final' : 'advance'
+    const occurredAt = params.occurredAt instanceof Date ? params.occurredAt : new Date(params.occurredAt)
+    if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid payment date')
+
+    const fingerprint = createHash(
+      ['manual', orderId, paymentKind, amount.toFixed(2), occurredAt.toISOString(), String(Date.now())].join('|'),
+    )
+    const shortId = orderId.slice(0, 6).toUpperCase()
+    const notes = params.notes?.trim() || ''
+
+    const ref = await addDoc(collection(db, 'bankTransactions'), {
+      gmailMessageId: `manual:${fingerprint}`,
+      gmailThreadId: '',
+      fingerprint,
+      source: 'manual' as BankSource,
+      occurredAt: Timestamp.fromDate(occurredAt),
+      amount,
+      direction: 'credit' as BankDirection,
+      currency: 'INR',
+      bankName: null,
+      accountLast4: null,
+      counterparty: null,
+      description: `Manual payment · ${shortId} · ${paymentKind}`,
+      rawSubject: notes,
+      snippet: '',
+      parseConfidence: 1,
+      parseNotes: 'Manual payment from order detail',
+      status: 'matched',
+      books: 'business',
+      personalCategory: null,
+      category: paymentKind,
+      workerId: null,
+      orderId,
+      purchaseId: null,
+      materialId: null,
+      productId: null,
+      paymentKind,
+      expenseKind: null,
+      workerPayKind: null,
+      tags: [],
+      matchType: 'order' as BankMatchType,
+      matchId: orderId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      reviewedBy: actorId(),
+    })
+
+    await this.rememberCategory(paymentKind)
+    return ref.id
+  },
+
   async getKnownTags(): Promise<string[]> {
     const snap = await getDoc(doc(db, 'meta', 'bankTags'))
     const stored = snap.exists() ? ((snap.data()?.names as string[]) ?? []) : []

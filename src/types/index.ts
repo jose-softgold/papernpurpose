@@ -18,8 +18,15 @@ export interface WorkerOption {
   email: string
 }
 
-export const GST_RATES = [0, 5, 12, 18, 28] as const
-export type GstRate = (typeof GST_RATES)[number]
+export const DEFAULT_GST_RATES = [0, 5, 12, 18, 28] as const
+/** @deprecated Prefer DEFAULT_GST_RATES — kept for older imports. */
+export const GST_RATES = DEFAULT_GST_RATES
+export type GstRate = number
+
+/** Company-wide GST slab list (`meta/gstSlabs`). */
+export interface GstSlabsSettings {
+  rates: number[]
+}
 
 export interface Customer {
   id: string
@@ -74,6 +81,11 @@ export interface Product {
   category: string
   description: string
   defaultSellingPrice: number
+  /**
+   * Optional product override for BOM suggested selling price.
+   * Null/absent = inherit company default from Settings (`meta/pricing`).
+   */
+  targetMarginPct?: number | null
   status: 'active' | 'inactive'
   imageUrl: string
   photoUrls?: string[]
@@ -92,8 +104,17 @@ export interface ProductVersion {
   version: string
   description: string
   status: 'active' | 'inactive'
+  /** Taxable catalog selling price frozen on this recipe version. */
+  sellingPrice?: number
+  /** Effective margin % when this version was created (display / audit). */
+  targetMarginPct?: number | null
   createdAt: Timestamp
   updatedAt: Timestamp
+}
+
+/** Company-wide pricing defaults (`meta/pricing`). */
+export interface PricingSettings {
+  targetMarginPct: number
 }
 
 export interface Material {
@@ -104,7 +125,10 @@ export interface Material {
   minimumStock: number
   costPerUnit: number
   supplierId: string
+  /** Free-text description / notes (shown as Description in the UI). */
   notes: string
+  /** Optional color or finish spec, e.g. "Pink", "Gold foil". */
+  colorSpec?: string
   status: 'active' | 'inactive'
   photoUrls?: string[]
   gstRate?: number

@@ -27,8 +27,8 @@ export function parseDate(raw: string): Date | null {
 
 export function parseGst(raw: string): number {
   const n = Number(String(raw).replace('%', '').trim())
-  if ([0, 5, 12, 18, 28].includes(n)) return n
-  return 0
+  if (!Number.isFinite(n) || n < 0 || n > 100) return 0
+  return Math.round(n * 100) / 100
 }
 
 export function digits(phone: string): string {

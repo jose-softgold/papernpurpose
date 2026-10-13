@@ -15,6 +15,7 @@ export interface SalesReportRow {
   date: string
   customer: string
   product: string
+  version: string
   quantity: number
   unitPrice: number
   revenue: number
@@ -24,7 +25,9 @@ export interface SalesReportRow {
 
 export interface ProductProfitabilityRow {
   productId: string
+  productVersionId: string
   product: string
+  version: string
   unitsSold: number
   revenue: number
   cost: number
@@ -67,15 +70,17 @@ function inRange(ts: Timestamp, from?: Date, to?: Date): boolean {
 
 export const reportService = {
   async getSalesReport(from?: Date, to?: Date): Promise<SalesReportRow[]> {
-    const [orders, allItems, customers, products] = await Promise.all([
+    const [orders, allItems, customers, products, versions] = await Promise.all([
       orderService.getAll(),
       fetchAllOrderItems(),
       customerService.getAll(),
       productService.getAll(),
+      productService.getAllVersions(),
     ])
 
     const customerMap = Object.fromEntries(customers.map(c => [c.id, c.name]))
     const productMap = Object.fromEntries(products.map(p => [p.id, p.name]))
+    const versionMap = Object.fromEntries(versions.map(v => [v.id, v.version]))
     const itemsByOrder = allItems.reduce<Record<string, OrderItem[]>>((acc, item) => {
       ;(acc[item.orderId] ??= []).push(item)
       return acc
@@ -91,6 +96,7 @@ export const reportService = {
           date: formatDate(order.orderDate),
           customer: customerMap[order.customerId] ?? '?',
           product: productMap[item.productId] ?? '?',
+          version: versionMap[item.productVersionId] ?? '?',
           quantity: item.quantity,
           unitPrice: item.unitPrice,
           revenue: item.totalPrice,
@@ -103,13 +109,15 @@ export const reportService = {
   },
 
   async getProductProfitability(from?: Date, to?: Date): Promise<ProductProfitabilityRow[]> {
-    const [orders, allItems, products] = await Promise.all([
+    const [orders, allItems, products, versions] = await Promise.all([
       orderService.getAll(),
       fetchAllOrderItems(),
       productService.getAll(),
+      productService.getAllVersions(),
     ])
 
     const productMap = Object.fromEntries(products.map(p => [p.id, p.name]))
+    const versionMap = Object.fromEntries(versions.map(v => [v.id, v.version]))
     const validOrderIds = new Set(
       orders
         .filter(o => o.status !== 'CANCELLED' && inRange(o.orderDate, from, to))
@@ -119,11 +127,13 @@ export const reportService = {
     const map: Record<string, ProductProfitabilityRow> = {}
     for (const item of allItems) {
       if (!validOrderIds.has(item.orderId)) continue
-      const pid = item.productId
-      if (!map[pid]) {
-        map[pid] = {
-          productId: pid,
-          product: productMap[pid] ?? '?',
+      const key = `${item.productId}::${item.productVersionId}`
+      if (!map[key]) {
+        map[key] = {
+          productId: item.productId,
+          productVersionId: item.productVersionId,
+          product: productMap[item.productId] ?? '?',
+          version: versionMap[item.productVersionId] ?? '?',
           unitsSold: 0,
           revenue: 0,
           cost: 0,
@@ -131,10 +141,10 @@ export const reportService = {
           margin: 0,
         }
       }
-      map[pid].unitsSold += item.quantity
-      map[pid].revenue += item.totalPrice
-      map[pid].cost += item.totalCost
-      map[pid].profit += item.profit
+      map[key].unitsSold += item.quantity
+      map[key].revenue += item.totalPrice
+      map[key].cost += item.totalCost
+      map[key].profit += item.profit
     }
 
     return Object.values(map)

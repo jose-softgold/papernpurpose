@@ -15,6 +15,9 @@ import {
   callGmailUpdateSettings,
 } from '../../firebase/functions'
 import { useToast } from '../../hooks/useToast'
+import { settingsService } from '../../services/settings'
+import { clampTargetMargin, DEFAULT_TARGET_MARGIN_PCT, normalizeGstRates } from '../../utils/tax'
+import { DEFAULT_GST_RATES } from '../../types'
 
 function GmailBankInboxCard({
   showToast,
@@ -236,6 +239,203 @@ function GmailBankInboxCard({
   )
 }
 
+function PricingSettingsCard({
+  showToast,
+}: {
+  showToast: (message: string, type?: 'success' | 'danger' | 'warning') => void
+}) {
+  const { role } = useAuth()
+  const [margin, setMargin] = useState(String(DEFAULT_TARGET_MARGIN_PCT))
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!isAdminOrOwner(role)) return
+    settingsService.getPricing()
+      .then(p => setMargin(String(p.targetMarginPct)))
+      .catch(() => showToast('Could not load pricing settings', 'danger'))
+      .finally(() => setLoading(false))
+  }, [role, showToast])
+
+  if (!isAdminOrOwner(role)) return null
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const targetMarginPct = clampTargetMargin(margin)
+      await settingsService.setPricing({ targetMarginPct })
+      setMargin(String(targetMarginPct))
+      showToast('Pricing settings saved')
+    } catch {
+      showToast('Failed to save pricing settings', 'danger')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="card mt-3" style={{ maxWidth: 480 }}>
+      <div className="card-header">
+        <h5 className="mb-0">Pricing</h5>
+      </div>
+      <div className="card-body">
+        <p className="small text-muted">
+          Company default target margin for BOM suggested selling prices on new orders.
+          Changing this does not update existing products or versions.
+        </p>
+        {loading ? (
+          <div className="text-muted small">Loading…</div>
+        ) : (
+          <div className="row g-2 align-items-end">
+            <div className="col-auto">
+              <label className="form-label">Global target margin %</label>
+              <div className="input-group" style={{ width: 160 }}>
+                <input
+                  className="form-control"
+                  type="number"
+                  min={0}
+                  max={99}
+                  step={1}
+                  value={margin}
+                  disabled={saving}
+                  onChange={e => setMargin(e.target.value)}
+                />
+                <span className="input-group-text">%</span>
+              </div>
+            </div>
+            <div className="col-auto">
+              <button type="button" className="btn btn-primary btn-sm" disabled={saving} onClick={() => void handleSave()}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function GstSlabsSettingsCard({
+  showToast,
+}: {
+  showToast: (message: string, type?: 'success' | 'danger' | 'warning') => void
+}) {
+  const { role } = useAuth()
+  const [rates, setRates] = useState<number[]>([...DEFAULT_GST_RATES])
+  const [newRate, setNewRate] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!isAdminOrOwner(role)) return
+    settingsService.getGstSlabs()
+      .then(s => setRates(s.rates))
+      .catch(() => showToast('Could not load GST slabs', 'danger'))
+      .finally(() => setLoading(false))
+  }, [role, showToast])
+
+  if (!isAdminOrOwner(role)) return null
+
+  const handleRemove = (rate: number) => {
+    if (rate === 0) {
+      showToast('0% must stay in the list', 'warning')
+      return
+    }
+    setRates(normalizeGstRates(rates.filter(r => r !== rate)))
+  }
+
+  const handleSave = async () => {
+    let next = rates
+    const raw = newRate.trim()
+    if (raw !== '') {
+      const n = parseFloat(raw)
+      if (!Number.isFinite(n) || n < 0 || n > 100) {
+        showToast('Enter a rate between 0 and 100', 'warning')
+        return
+      }
+      next = normalizeGstRates([...rates, n])
+    } else {
+      next = normalizeGstRates(rates)
+    }
+    setSaving(true)
+    try {
+      await settingsService.setGstSlabs({ rates: next })
+      setRates(next)
+      setNewRate('')
+      showToast('GST slabs saved')
+    } catch {
+      showToast('Failed to save GST slabs', 'danger')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="card mt-3" style={{ maxWidth: 480 }}>
+      <div className="card-header">
+        <h5 className="mb-0">GST slabs</h5>
+      </div>
+      <div className="card-body">
+        <p className="small text-muted">
+          Allowed GST rates for products, materials, purchases, and orders. 0% is always included.
+        </p>
+        {loading ? (
+          <div className="text-muted small">Loading…</div>
+        ) : (
+          <>
+            <div className="d-flex flex-wrap gap-2 mb-3">
+              {rates.map(rate => (
+                <span key={rate} className="badge bg-light text-dark border d-inline-flex align-items-center gap-1">
+                  {rate}%
+                  {rate !== 0 && (
+                    <button
+                      type="button"
+                      className="btn-close"
+                      style={{ fontSize: '0.55rem' }}
+                      aria-label={`Remove ${rate}%`}
+                      disabled={saving}
+                      onClick={() => handleRemove(rate)}
+                    />
+                  )}
+                </span>
+              ))}
+            </div>
+            <div className="row g-2 align-items-end">
+              <div className="col-auto">
+                <label className="form-label">Add rate %</label>
+                <div className="input-group" style={{ width: 140 }}>
+                  <input
+                    className="form-control"
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={1}
+                    value={newRate}
+                    disabled={saving}
+                    onChange={e => setNewRate(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        void handleSave()
+                      }
+                    }}
+                  />
+                  <span className="input-group-text">%</span>
+                </div>
+              </div>
+              <div className="col-auto">
+                <button type="button" className="btn btn-primary btn-sm" disabled={saving} onClick={() => void handleSave()}>
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const { user, userDoc, signOut, role } = useAuth()
   const { toasts, showToast } = useToast()
@@ -263,6 +463,10 @@ export default function SettingsPage() {
           </button>
         </div>
       </div>
+
+      <PricingSettingsCard showToast={showToast} />
+
+      <GstSlabsSettingsCard showToast={showToast} />
 
       <GmailBankInboxCard showToast={showToast} />
 

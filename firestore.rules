@@ -81,8 +81,8 @@ service cloud.firestore {
       allow list: if false;
       allow create: if
         (signedIn() && docId == 'bootstrap' && !bootstrapClaimed()) ||
-        ((docId == 'bankTags' || docId == 'personalCategories' || docId == 'bankCategories' || docId == 'expenseBudgets') && isAdminOrOwner());
-      allow update: if (docId == 'bankTags' || docId == 'personalCategories' || docId == 'bankCategories' || docId == 'expenseBudgets') && isAdminOrOwner();
+        ((docId == 'bankTags' || docId == 'personalCategories' || docId == 'bankCategories' || docId == 'expenseBudgets' || docId == 'pricing' || docId == 'gstSlabs') && isAdminOrOwner());
+      allow update: if (docId == 'bankTags' || docId == 'personalCategories' || docId == 'bankCategories' || docId == 'expenseBudgets' || docId == 'pricing' || docId == 'gstSlabs') && isAdminOrOwner();
       allow delete: if false;
     }
 

@@ -39,70 +39,60 @@ After sign-in, the home route is the **AI assistant** (`/`). Use the sidebar **W
 
 ## Local Development Setup
 
-### 1. Install Dependencies
+### One command (recommended)
+
+Starts Firebase emulators (local Auth / Firestore / Storage / Functions), seeds sample data when the local DB is empty, and runs the Vite app in emulator mode:
 
 ```bash
-npm install
-npm install --prefix functions
-npm run build:functions
+npm run dev:up
 ```
 
-### 2. Start Firebase Emulators
+| URL / credential | Value |
+|------------------|-------|
+| App | http://localhost:5173 |
+| Emulator UI | http://localhost:4000 |
+| Email | `admin@craftbiz.local` |
+| Password | `password123` |
 
-In one terminal (Auth, Firestore, Storage, Functions). Persist data across restarts with `--import` / `--export-on-exit`:
+Flags (pass after `--`):
 
 ```bash
-npm run emulators:persist
+npm run dev:up -- --reset    # wipe ./emulator-data, seed fresh
+npm run dev:up -- --seed     # seed even if data already exists (may duplicate)
+npm run dev:up -- --no-seed  # emulators + app only
 ```
 
-Or equivalently:
-
-```bash
-firebase emulators:start --project demo-project --import=./emulator-data --export-on-exit=./emulator-data
-```
-
-Optional AI key for the Functions emulator:
+Optional AI key for the Functions emulator (export before `dev:up`):
 
 ```bash
 export LLM_API_KEY=your-gemini-key
 export LLM_MODEL=gemini-3.6-flash
 ```
 
-Emulator UI: http://localhost:4000  
-Functions: http://localhost:5001
+`dev:up` sets `VITE_USE_EMULATOR=true` for the Vite process so you do not need to change a production `.env.local`. Emulator data is saved to `./emulator-data` on exit.
 
-Copy `.env.example` to `.env.local` and set `VITE_USE_EMULATOR=true` for local runs.
-
-### 3. Start Dev Server
+### Manual / split terminals
 
 ```bash
+npm install
+npm install --prefix functions
+npm run build:functions
+
+# Terminal 1 — emulators (persist across restarts)
+npm run emulators:persist
+
+# Terminal 2 — seed once on a fresh DB
+npm run seed
+
+# Terminal 3 — frontend (set VITE_USE_EMULATOR=true in .env.local)
 npm run dev
 ```
-
-App: http://localhost:5173
-
-### 4. Create Owner Account (first run only)
-
-With emulators running on a fresh database:
-
-```bash
-npm run seed
-```
-
-Then log in:
-
-| Field    | Value                  |
-|----------|------------------------|
-| Email    | `admin@partycraft.com` |
-| Password | `Admin@1234`           |
-| Role     | Owner                  |
-
-After the first run, always start emulators with `--import=./emulator-data` so accounts survive restarts.
 
 ### Useful scripts
 
 | Script | Purpose |
 |--------|---------|
+| `npm run dev:up` | Emulators + seed-if-empty + Vite (one command) |
 | `npm run emulators` | Emulators without persistence |
 | `npm run emulators:persist` | Emulators with import/export |
 | `npm run build:functions` | Compile Cloud Functions |

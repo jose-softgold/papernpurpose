@@ -331,11 +331,15 @@ export default function PurchasePage() {
                       <td>
                         <input type="number" className="form-control form-control-sm" min={0} step="0.01" value={item.materialId ? item.unitCost : ''} placeholder="0" onChange={e => updateItem(idx, { unitCost: parseFloat(e.target.value) || 0 })} />
                       </td>
-                      <td>
-                        <select className="form-select form-select-sm" value={item.gstRate} onChange={e => updateItem(idx, { gstRate: Number(e.target.value) })}>
-                          {[0, 5, 12, 18, 28].map(r => <option key={r} value={r}>{r}%</option>)}
-                        </select>
-                      </td>
+                        <td>
+                          <GstRateSelect
+                            label={null}
+                            compact
+                            className="form-select form-select-sm"
+                            value={item.gstRate}
+                            onChange={rate => updateItem(idx, { gstRate: rate })}
+                          />
+                        </td>
                       <td>{formatCurrency(taxLines[idx].lineTotal)}</td>
                       <td>
                         <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeItem(idx)} disabled={items.length === 1}>✕</button>

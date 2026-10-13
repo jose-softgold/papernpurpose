@@ -118,6 +118,10 @@ export default function MaterialDetail() {
             {material.category || '—'}
           </div>
           <div className="col-6 col-md-3">
+            <small className="text-muted d-block">Color / spec</small>
+            {material.colorSpec?.trim() || '—'}
+          </div>
+          <div className="col-6 col-md-3">
             <small className="text-muted d-block">Stock</small>
             {stock} {material.unit}
           </div>
@@ -135,7 +139,7 @@ export default function MaterialDetail() {
           )}
           {material.notes && (
             <div className="col-12">
-              <small className="text-muted d-block">Notes</small>
+              <small className="text-muted d-block">Description</small>
               {material.notes}
             </div>
           )}

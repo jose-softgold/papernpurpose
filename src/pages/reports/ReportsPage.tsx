@@ -188,6 +188,7 @@ function SalesTab() {
     Date: r.date,
     Customer: r.customer,
     Product: r.product,
+    Version: r.version,
     Qty: r.quantity,
     'Unit Price (₹)': r.unitPrice,
     'Revenue (₹)': r.revenue,
@@ -214,6 +215,7 @@ function SalesTab() {
                       <th>Date</th>
                       <th>Customer</th>
                       <th>Product</th>
+                      <th>Version</th>
                       <th>Qty</th>
                       <th>Unit Price (₹)</th>
                       <th>Revenue (₹)</th>
@@ -227,6 +229,7 @@ function SalesTab() {
                         <td>{r.date}</td>
                         <td>{r.customer}</td>
                         <td>{r.product}</td>
+                        <td>{r.version}</td>
                         <td>{r.quantity}</td>
                         <td>{formatCurrency(r.unitPrice)}</td>
                         <td>{formatCurrency(r.revenue)}</td>
@@ -270,6 +273,7 @@ function ProfitabilityTab() {
 
   const exportData: Record<string, unknown>[] = (rows ?? []).map(r => ({
     Product: r.product,
+    Version: r.version,
     'Units Sold': r.unitsSold,
     'Revenue (₹)': r.revenue,
     'Cost (₹)': r.cost,
@@ -292,12 +296,12 @@ function ProfitabilityTab() {
         <>
           {top3.length > 0 && (
             <div className="mb-3">
-              <h6 className="text-muted mb-2">Top {top3.length} Products by Profit</h6>
+              <h6 className="text-muted mb-2">Top {top3.length} Product Versions by Profit</h6>
               {top3.map((r, i) => (
-                <div key={r.productId} className="mb-1">
+                <div key={`${r.productId}-${r.productVersionId}`} className="mb-1">
                   <div className="d-flex justify-content-between small mb-1">
                     <span>
-                      {i + 1}. {r.product}
+                      {i + 1}. {r.product} ({r.version})
                     </span>
                     <span className="text-success fw-semibold">{formatCurrency(r.profit)}</span>
                   </div>
@@ -318,6 +322,7 @@ function ProfitabilityTab() {
                   <thead className="table-light">
                     <tr>
                       <th>Product</th>
+                      <th>Version</th>
                       <th>Units Sold</th>
                       <th>Revenue (₹)</th>
                       <th>Cost (₹)</th>
@@ -327,8 +332,9 @@ function ProfitabilityTab() {
                   </thead>
                   <tbody>
                     {pageItems.map(r => (
-                      <tr key={r.productId}>
+                      <tr key={`${r.productId}-${r.productVersionId}`}>
                         <td>{r.product}</td>
+                        <td>{r.version}</td>
                         <td>{r.unitsSold}</td>
                         <td>{formatCurrency(r.revenue)}</td>
                         <td>{formatCurrency(r.cost)}</td>

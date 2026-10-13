@@ -148,7 +148,7 @@ const TEMPLATES: Record<ImportKind, Record<string, unknown>> = {
 const HINTS: Record<ImportKind, string> = {
   customers: 'Columns: name, type (individual/company), phone, email, city, address, gstin, company name, contact person, notes.',
   suppliers: 'Columns: name, type, phone, email, city, address, gstin, company name, contact person, notes.',
-  materials: 'Columns: name, category, unit, minimum stock, cost per unit, gst rate, hsn, supplier, notes. Missing suppliers are created.',
+  materials: 'Columns: name, category, unit, color/spec, minimum stock, cost per unit, gst rate, hsn, supplier, notes/description. Missing suppliers are created.',
   products: 'Columns: name, category, description, selling price, gst rate, hsn, version, notes. A version is created if missing (default V1).',
   purchases: 'Columns: supplier, purchase date, material, qty, unit cost, gst rate, notes. Rows with the same supplier + date become one purchase. Missing suppliers/materials are created.',
   orders: 'Columns: customer name, phone, order date, event date, event type, product name, qty, unit price, notes. Rows with the same customer + dates become one order. Missing customers/products are created.',
@@ -512,9 +512,10 @@ function mapMaterial(r: Record<string, string>, row: number, cat: Catalog): Prev
       cost,
       gstRate,
       category: cell(r, 'category'),
+      colorSpec: cell(r, 'color', 'color spec', 'color/spec', 'colour', 'colour spec'),
       minimumStock: Number(cell(r, 'minimum stock', 'min stock') || 0),
       hsnSac: cell(r, 'hsn', 'hsn sac', 'hsn/sac'),
-      notes: cell(r, 'notes', 'note'),
+      notes: cell(r, 'notes', 'note', 'description'),
       supplierName,
     },
   }
@@ -841,6 +842,7 @@ async function commitKind(kind: ImportKind, rows: PreviewRow[], onProgress: (n: 
         costPerUnit: Number(d.cost || 0),
         supplierId,
         notes: String(d.notes ?? 'Created from bulk import'),
+        colorSpec: String(d.colorSpec ?? ''),
         status: 'active',
         gstRate: Number(d.gstRate || 0),
         hsnSac: String(d.hsnSac ?? ''),

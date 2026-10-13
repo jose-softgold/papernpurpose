@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, type FormEvent } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
@@ -14,10 +14,17 @@ import ConfirmModal from '../../components/ConfirmModal'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import { formatCurrency, formatDate } from '../../utils/format'
+import OrderFormModal, {
+  OrderFormLine,
+  OrderFormValues,
+  itemsToLines,
+  orderFormToPayload,
+  orderToForm,
+} from '../../components/OrderFormModal'
 import { usersService } from '../../services/users'
 import WorkerPicker from '../../components/WorkerPicker'
 import { isAdminOrOwner } from '../../utils/roles'
-import type { WorkerOption } from '../../types'
+import type { WorkerOption, BankPaymentKind } from '../../types'
 
 const STATUS_BADGE: Record<OrderStatus, string> = {
   DRAFT: 'secondary',
@@ -85,6 +92,16 @@ export default function OrderDetail() {
   const [savingShipment, setSavingShipment] = useState(false)
   const shipFileRef = useRef<HTMLInputElement>(null)
   const [bankTxs, setBankTxs] = useState<BankTransaction[]>([])
+  const [editing, setEditing] = useState(false)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [showAddPayment, setShowAddPayment] = useState(false)
+  const [savingPayment, setSavingPayment] = useState(false)
+  const [paymentForm, setPaymentForm] = useState({
+    amount: '',
+    occurredAt: '',
+    paymentKind: 'advance' as BankPaymentKind,
+    notes: '',
+  })
 
   // Bill photo lightbox
   const [viewingPhotos, setViewingPhotos] = useState<string[] | null>(null)
@@ -250,6 +267,76 @@ export default function OrderDetail() {
     logisticsTxs.length > 0 &&
     (shipCostNum == null || Math.abs(shipCostNum - logisticsBankSum) <= 1)
   const workerPaySum = workerPayTxs.reduce((s, t) => s + t.amount, 0)
+
+  const nowDatetimeLocal = () => {
+    const d = new Date()
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+
+  const openAddPayment = () => {
+    setPaymentForm({
+      amount: remaining > 0 ? String(Math.round(remaining * 100) / 100) : '',
+      occurredAt: nowDatetimeLocal(),
+      paymentKind: collected > 0 ? 'final' : 'advance',
+      notes: '',
+    })
+    setShowAddPayment(true)
+  }
+
+  const handleAddPayment = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!id) return
+    const amount = parseFloat(paymentForm.amount)
+    if (!Number.isFinite(amount) || amount <= 0) {
+      showToast('Enter a payment amount greater than 0', 'warning')
+      return
+    }
+    const occurredAt = paymentForm.occurredAt ? new Date(paymentForm.occurredAt) : new Date()
+    if (Number.isNaN(occurredAt.getTime())) {
+      showToast('Enter a valid date', 'warning')
+      return
+    }
+    setSavingPayment(true)
+    try {
+      await bankService.createManualCustomerPayment({
+        orderId: id,
+        amount,
+        paymentKind: paymentForm.paymentKind,
+        occurredAt,
+        notes: paymentForm.notes.trim() || undefined,
+      })
+      const linkedBank = await bankService.listByOrderId(id)
+      setBankTxs(linkedBank)
+      setShowAddPayment(false)
+      showToast('Payment recorded')
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : 'Failed to record payment', 'danger')
+    } finally {
+      setSavingPayment(false)
+    }
+  }
+
+  const handleSaveEdit = async (form: OrderFormValues, lines: OrderFormLine[]) => {
+    if (!id) return
+    const payload = orderFormToPayload(form, lines)
+    if (payload.items.length === 0) {
+      showToast('Add at least one line item', 'warning')
+      return
+    }
+    setSavingEdit(true)
+    try {
+      await orderService.update(id, payload)
+      showToast('Order updated')
+      setEditing(false)
+      await load()
+    } catch {
+      showToast('Failed to update order', 'danger')
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
   const handleSaveAssignment = async () => {
     if (!id) return
     setSavingAssign(true)
@@ -286,6 +373,11 @@ export default function OrderDetail() {
         <span className={`badge bg-${STATUS_BADGE[order.status]}`}>{order.status.replace(/_/g, ' ')}</span>
 
         <div className="ms-auto d-flex gap-2">
+          {!isWorker && (
+            <button className="btn btn-sm btn-outline-primary" onClick={() => setEditing(true)}>
+              Edit Order
+            </button>
+          )}
           {flow && (
             <button
               className={`btn btn-sm ${flow.btnClass}`}
@@ -451,10 +543,86 @@ export default function OrderDetail() {
                   <ul className="list-unstyled small mb-0">
                     {paymentTxs.map(t => (
                       <li key={t.id}>
-                        {formatDate(t.occurredAt)} · {t.paymentKind} · {formatCurrency(t.amount)}
+                        {formatDate(t.occurredAt)} · {t.paymentKind}
+                        {t.source === 'manual' ? ' · manual' : ''} · {formatCurrency(t.amount)}
                       </li>
                     ))}
                   </ul>
+                )}
+                {!showAddPayment ? (
+                  <button
+                    type="button"
+                    className="btn btn-outline-secondary btn-sm mt-2"
+                    onClick={openAddPayment}
+                  >
+                    + Add payment
+                  </button>
+                ) : (
+                  <form className="mt-2 border rounded p-2" onSubmit={e => void handleAddPayment(e)}>
+                    <div className="mb-2">
+                      <label className="form-label small mb-0">Amount (₹)</label>
+                      <input
+                        type="number"
+                        className="form-control form-control-sm"
+                        min={0}
+                        step="0.01"
+                        value={paymentForm.amount}
+                        disabled={savingPayment}
+                        onChange={e => setPaymentForm(f => ({ ...f, amount: e.target.value }))}
+                        required
+                      />
+                    </div>
+                    <div className="mb-2">
+                      <label className="form-label small mb-0">Date</label>
+                      <input
+                        type="datetime-local"
+                        className="form-control form-control-sm"
+                        value={paymentForm.occurredAt}
+                        disabled={savingPayment}
+                        onChange={e => setPaymentForm(f => ({ ...f, occurredAt: e.target.value }))}
+                        required
+                      />
+                    </div>
+                    <div className="mb-2">
+                      <label className="form-label small mb-0">Kind</label>
+                      <select
+                        className="form-select form-select-sm"
+                        value={paymentForm.paymentKind}
+                        disabled={savingPayment}
+                        onChange={e => setPaymentForm(f => ({
+                          ...f,
+                          paymentKind: e.target.value === 'final' ? 'final' : 'advance',
+                        }))}
+                      >
+                        <option value="advance">advance</option>
+                        <option value="final">final</option>
+                      </select>
+                    </div>
+                    <div className="mb-2">
+                      <label className="form-label small mb-0">Note (optional)</label>
+                      <input
+                        type="text"
+                        className="form-control form-control-sm"
+                        value={paymentForm.notes}
+                        disabled={savingPayment}
+                        onChange={e => setPaymentForm(f => ({ ...f, notes: e.target.value }))}
+                        placeholder="Cash / UPI ref…"
+                      />
+                    </div>
+                    <div className="d-flex gap-1">
+                      <button type="submit" className="btn btn-primary btn-sm" disabled={savingPayment}>
+                        {savingPayment ? 'Saving…' : 'Save'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-outline-secondary btn-sm"
+                        disabled={savingPayment}
+                        onClick={() => setShowAddPayment(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
                 )}
               </div>
               <div className="col-md-4">
@@ -619,8 +787,13 @@ export default function OrderDetail() {
 
       {/* Order Items */}
       <div className="card mb-4">
-        <div className="card-header">
+        <div className="card-header d-flex justify-content-between align-items-center">
           <h5 className="mb-0">Order Items</h5>
+          {!isWorker && (
+            <button className="btn btn-sm btn-outline-primary" onClick={() => setEditing(true)}>
+              Edit
+            </button>
+          )}
         </div>
         <div className="table-responsive">
           <table className="table table-sm mb-0">
@@ -708,6 +881,21 @@ export default function OrderDetail() {
           <div className="card-body"><p className="mb-0">{order.notes}</p></div>
         </div>
       )}
+
+      <OrderFormModal
+        show={editing}
+        mode="edit"
+        initialForm={orderToForm(order)}
+        initialLines={itemsToLines(items)}
+        warning={
+          order.status === 'COMPLETED'
+            ? 'This order is completed. Changing quantities will not update inventory automatically.'
+            : undefined
+        }
+        saving={savingEdit}
+        onCancel={() => setEditing(false)}
+        onSubmit={handleSaveEdit}
+      />
 
       {/* Photo Lightbox */}
       {viewingPhotos && (

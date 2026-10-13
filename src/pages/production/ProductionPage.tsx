@@ -40,11 +40,23 @@ function shortOrderId(id: string) {
   return id.slice(0, 6).toUpperCase()
 }
 
+function formatQtyUnit(qty: number, unit: string | undefined | null): string {
+  const u = (unit ?? '').trim()
+  if (!u) return String(qty)
+  // Avoid "80 40" when unit is a bare number (bad master data)
+  if (/^\d+(\.\d+)?$/.test(u)) return `${qty} (unit: ${u})`
+  return `${qty} ${u}`
+}
+
+function rowUnit(r: MaterialRow): string {
+  return (r.bomItem.unit || r.material?.unit || '').trim()
+}
+
 function linkedOrderLabel(order: Order, items: OrderItem[], products: Record<string, Product>): string {
   const productPart = items
     .map(i => `${products[i.productId]?.name ?? 'Product'} ×${i.quantity}`)
     .join(', ')
-  return [shortOrderId(order.id), order.eventType?.trim(), productPart].filter(Boolean).join(' · ')
+  return [shortOrderId(order.id), order.status, order.eventType?.trim(), productPart].filter(Boolean).join(' · ')
 }
 
 export default function ProductionPage() {
@@ -106,10 +118,11 @@ export default function ProductionPage() {
       .catch(() => {
         setOrders([])
         setOrderItemsById({})
+        showToast('Could not load orders', 'danger')
       })
     if (canAssign) usersService.listWorkers().then(setWorkers).catch(() => {})
     occasionService.getAllSeasons().then(setSeasons).catch(() => {})
-  }, [canAssign, isWorker, user?.uid])
+  }, [canAssign, isWorker, user?.uid, showToast])
 
   useEffect(() => {
     if (!selectedProductId) {
@@ -204,6 +217,16 @@ export default function ProductionPage() {
   const formComplete = selectedProductId && selectedVersionId && expectedQty >= 1 && productionDate
   const parsedActual = actualQty === '' ? expectedQty : (parseFloat(actualQty) || 0)
 
+  const costPerFinishedItem = materialRows.reduce((sum, r) => {
+    const unitCost = r.material?.costPerUnit ?? 0
+    return sum + r.bomItem.quantity * unitCost
+  }, 0)
+  const taxPerFinishedItem = materialRows.reduce((sum, r) => {
+    const unitCost = r.material?.costPerUnit ?? 0
+    const gst = (r.material?.gstRate ?? 0) / 100
+    return sum + r.bomItem.quantity * unitCost * gst
+  }, 0)
+
   const linkableOrders = useMemo(() => {
     const byDate = (a: Order, b: Order) => millisOf(b.orderDate) - millisOf(a.orderDate)
     if (!selectedProductId) return [...orders].sort(byDate)
@@ -255,7 +278,7 @@ export default function ProductionPage() {
         plannedQty: r.bomItem.quantity,
         actualQty: parseFloat(r.actualQty) || r.requiredTotal,
         unitCost: r.material?.costPerUnit ?? 0,
-        unit: r.material?.unit ?? r.bomItem.unit,
+        unit: r.bomItem.unit || r.material?.unit || '',
       }))
       const seasonId = selectedSeasonId || null
       const batchCode = seasonId ? batchCodePreview || undefined : undefined
@@ -427,6 +450,13 @@ export default function ProductionPage() {
                     </option>
                   ))}
                 </select>
+                {linkableOrders.length === 0 && (
+                  <div className="form-text">
+                    {isWorker
+                      ? 'Only Confirmed, In production, and Ready orders assigned to you appear here.'
+                      : 'Only Quoted, Confirmed, In production, and Ready orders appear here.'}
+                  </div>
+                )}
               </div>
               <div className="col-md-4">
                 <label className="form-label">Occasion season (optional)</label>
@@ -497,21 +527,26 @@ export default function ProductionPage() {
                           {materialRows.map((r, idx) => (
                             <tr key={r.bomItem.id}>
                               <td>{r.material?.name ?? r.bomItem.materialId}</td>
-                              <td>{r.bomItem.quantity} {r.material?.unit ?? ''}</td>
-                              <td>{r.requiredTotal} {r.material?.unit ?? ''}</td>
+                              <td>{formatQtyUnit(r.bomItem.quantity, rowUnit(r))}</td>
+                              <td>{formatQtyUnit(r.requiredTotal, rowUnit(r))}</td>
                               {completeNow && (
                                 <td>
-                                  <input
-                                    type="number"
-                                    className="form-control form-control-sm"
-                                    min={0}
-                                    step="0.001"
-                                    value={r.actualQty}
-                                    onChange={e => setMaterialRows(prev => prev.map((row, i) => i === idx ? { ...row, actualQty: e.target.value } : row))}
-                                  />
+                                  <div className="input-group input-group-sm">
+                                    <input
+                                      type="number"
+                                      className="form-control"
+                                      min={0}
+                                      step="0.001"
+                                      value={r.actualQty}
+                                      onChange={e => setMaterialRows(prev => prev.map((row, i) => i === idx ? { ...row, actualQty: e.target.value } : row))}
+                                    />
+                                    {rowUnit(r) && !/^\d+(\.\d+)?$/.test(rowUnit(r)) && (
+                                      <span className="input-group-text">{rowUnit(r)}</span>
+                                    )}
+                                  </div>
                                 </td>
                               )}
-                              <td>{r.available} {r.material?.unit ?? ''}</td>
+                              <td>{formatQtyUnit(r.available, rowUnit(r))}</td>
                               <td>
                                 {r.sufficient
                                   ? <span className="badge bg-success">OK</span>
@@ -526,7 +561,9 @@ export default function ProductionPage() {
                       {materialRows.map((r, idx) => (
                         <div key={r.bomItem.id} className="pc-line-card mb-2">
                           <div className="fw-semibold">{r.material?.name}</div>
-                          <div className="small text-muted">Need {r.requiredTotal} · have {r.available} {r.material?.unit}</div>
+                          <div className="small text-muted">
+                            Need {formatQtyUnit(r.requiredTotal, rowUnit(r))} · have {formatQtyUnit(r.available, rowUnit(r))}
+                          </div>
                           {completeNow && (
                             <div className="mt-2">
                               <label className="form-label">Actual used</label>
@@ -541,6 +578,25 @@ export default function ProductionPage() {
                           )}
                         </div>
                       ))}
+                    </div>
+                    <div className="mt-3 small border-top pt-2">
+                      <div className="d-flex flex-wrap gap-3">
+                        <span>
+                          <span className="text-muted">Production cost / item:</span>{' '}
+                          <strong>{formatCurrency(costPerFinishedItem)}</strong>
+                        </span>
+                        <span>
+                          <span className="text-muted">Tax / item:</span>{' '}
+                          <strong>{formatCurrency(taxPerFinishedItem)}</strong>
+                        </span>
+                        <span>
+                          <span className="text-muted">Cost incl. GST:</span>{' '}
+                          <strong>{formatCurrency(costPerFinishedItem + taxPerFinishedItem)}</strong>
+                        </span>
+                      </div>
+                      <div className="text-muted mt-1">
+                        From BOM qty × material cost / GST on the Materials master (per finished unit).
+                      </div>
                     </div>
                   </>
                 )}

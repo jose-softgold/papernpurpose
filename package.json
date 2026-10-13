@@ -5,10 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:up": "bash scripts/dev-up.sh",
     "build": "tsc -b && vite build",
     "build:functions": "npm --prefix functions run build",
-    "emulators": "firebase emulators:start --project demo-project",
-    "emulators:persist": "firebase emulators:start --project demo-project --import=./emulator-data --export-on-exit=./emulator-data",
+    "emulators": "firebase emulators:start --project demo-project --only auth,functions,firestore,storage",
+    "emulators:persist": "firebase emulators:start --project demo-project --only auth,functions,firestore,storage --import=./emulator-data --export-on-exit=./emulator-data",
     "lint": "eslint .",
     "preview": "vite preview",
     "rules:check": "node scripts/rules-check.mjs",

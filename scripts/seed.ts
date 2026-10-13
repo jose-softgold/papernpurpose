@@ -9,7 +9,17 @@ initializeApp({ projectId: 'demo-project' })
 const db = getFirestore()
 const authAdmin = getAuth()
 
+const ifEmpty = process.argv.includes('--if-empty')
+
 async function seed() {
+  if (ifEmpty) {
+    const bootstrap = await db.collection('meta').doc('bootstrap').get()
+    if (bootstrap.exists) {
+      console.log('Already seeded (meta/bootstrap exists); skipping.')
+      process.exit(0)
+    }
+  }
+
   console.log('Seeding database...')
 
   // Create test user + owner profile

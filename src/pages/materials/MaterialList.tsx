@@ -31,6 +31,7 @@ interface FormData {
   costPerUnit: string
   supplierId: string
   notes: string
+  colorSpec: string
   gstRate: string
   hsnSac: string
 }
@@ -61,6 +62,7 @@ function MaterialForm({
     costPerUnit: String(initial?.costPerUnit ?? 0),
     supplierId: initial?.supplierId ?? '',
     notes: initial?.notes ?? '',
+    colorSpec: initial?.colorSpec ?? '',
     gstRate: String(initial?.gstRate ?? 0),
     hsnSac: initial?.hsnSac ?? '',
   })
@@ -90,7 +92,27 @@ function MaterialForm({
         </div>
         <div className="mb-3">
           <label className="form-label">Unit <span className="text-danger">*</span></label>
-          <input className="form-control" value={form.unit} onChange={set('unit')} required placeholder="e.g. kg, pcs, m" />
+          <input
+            className="form-control"
+            value={form.unit}
+            onChange={set('unit')}
+            required
+            list="material-unit-options"
+            placeholder="e.g. kg, pcs, sheets, m"
+          />
+          <datalist id="material-unit-options">
+            <option value="pcs" />
+            <option value="sheets" />
+            <option value="kg" />
+            <option value="m" />
+            <option value="ml" />
+            <option value="grams" />
+          </datalist>
+          <div className="form-text">Use a unit name (pcs, sheets), not a quantity.</div>
+        </div>
+        <div className="mb-3">
+          <label className="form-label">Color / spec</label>
+          <input className="form-control" value={form.colorSpec} onChange={set('colorSpec')} placeholder="e.g. Pink, Gold foil" />
         </div>
         <div className="row">
           <div className="col-md-6 mb-3">
@@ -156,7 +178,7 @@ function MaterialForm({
           )}
         </div>
         <div className="mb-3">
-          <label className="form-label">Notes</label>
+          <label className="form-label">Description</label>
           <textarea className="form-control" rows={3} value={form.notes} onChange={set('notes')} />
         </div>
       </div>
@@ -300,6 +322,7 @@ export default function MaterialList() {
         costPerUnit: parseFloat(data.costPerUnit) || 0,
         supplierId: data.supplierId,
         notes: data.notes,
+        colorSpec: data.colorSpec.trim(),
         gstRate: parseFloat(data.gstRate) || 0,
         hsnSac: data.hsnSac,
         status: 'active',
@@ -329,6 +352,7 @@ export default function MaterialList() {
         costPerUnit: parseFloat(data.costPerUnit) || 0,
         supplierId: data.supplierId,
         notes: data.notes,
+        colorSpec: data.colorSpec.trim(),
         gstRate: parseFloat(data.gstRate) || 0,
         hsnSac: data.hsnSac,
         photoUrls,
@@ -469,6 +493,7 @@ export default function MaterialList() {
                 <tr>
                   <th>Material</th>
                   <th>Category</th>
+                  <th>Color / spec</th>
                   <th className="text-end">Current Stock</th>
                   <th>Unit</th>
                   <th className="text-end">Min Stock</th>
@@ -495,6 +520,7 @@ export default function MaterialList() {
                         <Link to={`/materials/${m.id}`} onClick={e => e.stopPropagation()}>{m.name}</Link>
                       </td>
                       <td>{m.category || '—'}</td>
+                      <td>{m.colorSpec?.trim() || '—'}</td>
                       <td className="text-end">{currentStock}</td>
                       <td>{m.unit}</td>
                       <td className="text-end">{m.minimumStock}</td>
