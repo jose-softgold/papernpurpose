@@ -379,7 +379,7 @@ export default function PurchasePage() {
         <div className="card-body">
           <form onSubmit={handleSubmit}>
             <div className="row g-3 mb-3">
-              <div className="col-md-3">
+              <div className="col-md-6">
                 <QuickSelect
                   label="Supplier"
                   required
@@ -390,7 +390,7 @@ export default function PurchasePage() {
                   onAdd={() => setQuick('supplier')}
                 />
               </div>
-              <div className="col-md-3">
+              <div className="col-md-6">
                 <QuickSelect
                   label="Paid by"
                   required
@@ -403,7 +403,7 @@ export default function PurchasePage() {
                   }))}
                 />
               </div>
-              <div className="col-md-3">
+              <div className="col-md-6">
                 <label className="form-label">Payment status <span className="text-danger">*</span></label>
                 <select
                   className="form-select"
@@ -414,7 +414,7 @@ export default function PurchasePage() {
                   <option value="paid">Paid</option>
                 </select>
               </div>
-              <div className="col-md-3">
+              <div className="col-md-6">
                 <label className="form-label">Purchase Date</label>
                 <input
                   type="datetime-local"
@@ -579,10 +579,10 @@ export default function PurchasePage() {
                         <th>Date</th>
                         <th>Supplier</th>
                         <th>Paid by</th>
+                        <th>Payment status</th>
+                        <th>Total (₹)</th>
                         <th>Materials</th>
                         <th>Total Qty</th>
-                        <th>Total (₹)</th>
-                        <th>Payment</th>
                         <th>Bills</th>
                         <th>Status</th>
                       </tr>
@@ -608,14 +608,14 @@ export default function PurchasePage() {
                           <td>{formatDate(p.purchaseDate)}</td>
                           <td>{supplierMap[p.supplierId]?.name ?? p.supplierId}</td>
                           <td>{p.purchasedByName || '—'}</td>
-                          <td>{p.itemCount ?? '—'}</td>
-                          <td>{p.totalQty ?? '—'}</td>
-                          <td>{formatCurrency(total)}</td>
                           <td>
                             <span className={`badge ${settled ? 'text-bg-success' : 'text-bg-warning'}`}>
                               {settled ? 'Paid' : 'Not paid'}
                             </span>
                           </td>
+                          <td>{formatCurrency(total)}</td>
+                          <td>{p.itemCount ?? '—'}</td>
+                          <td>{p.totalQty ?? '—'}</td>
                           <td>
                             {p.billPhotoUrls?.length ? (
                               <button
