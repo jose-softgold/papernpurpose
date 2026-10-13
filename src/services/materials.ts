@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, getDoc, addDoc, updateDoc, query, orderBy, serverTimestamp } from 'firebase/firestore'
+import { collection, doc, getDocs, getDoc, addDoc, updateDoc, query, where, orderBy, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { db } from '../firebase/config'
 import { Material } from '../types'
 import { auditService } from './audit'
@@ -31,5 +31,15 @@ export const materialService = {
 
   async update(id: string, data: Partial<Material>): Promise<void> {
     await updateDoc(doc(db, 'materials', id), { ...data, updatedAt: serverTimestamp() })
+  },
+
+  /** Also drops recipe (BOM) lines that use this material. */
+  async delete(id: string, name?: string): Promise<void> {
+    const bomSnap = await getDocs(query(collection(db, 'bomItems'), where('materialId', '==', id)))
+    const batch = writeBatch(db)
+    bomSnap.docs.forEach(d => batch.delete(d.ref))
+    batch.delete(doc(db, 'materials', id))
+    await batch.commit()
+    await auditService.log({ action: 'material.delete', entityType: 'material', entityId: id, before: { name: name ?? null } })
   },
 }

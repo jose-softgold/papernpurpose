@@ -21,7 +21,7 @@ import { formatCurrency, formatDate } from '../../utils/format'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import QuickSelect from '../../components/QuickSelect'
 import { GstRateSelect } from '../../components/GstFields'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 
 interface FormData {
   name: string
@@ -258,6 +258,7 @@ export default function MaterialList() {
   const [showForm, setShowForm] = useState(false)
   const [editMaterial, setEditMaterial] = useState<Material | null>(null)
   const [confirmToggle, setConfirmToggle] = useState<Material | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<Material | null>(null)
   const [saving, setSaving] = useState(false)
   const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null)
   const [txHistory, setTxHistory] = useState<InventoryTransaction[]>([])
@@ -288,6 +289,15 @@ export default function MaterialList() {
     load()
     supplierService.getAll().then(setSuppliers).catch(() => {})
   }, [])
+
+  const [searchParams, setSearchParams] = useSearchParams()
+  useEffect(() => {
+    const editId = searchParams.get('edit')
+    if (!editId || !materials.length) return
+    const target = materials.find(m => m.id === editId)
+    if (target) setEditMaterial(target)
+    setSearchParams({}, { replace: true })
+  }, [materials, searchParams, setSearchParams])
 
   const filtered = materials.filter(m => {
     const q = search.toLowerCase()
@@ -378,6 +388,19 @@ export default function MaterialList() {
       await load()
     } catch {
       showToast('Failed to update status', 'danger')
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return
+    try {
+      await materialService.delete(confirmDelete.id, confirmDelete.name)
+      showToast('Material deleted')
+      if (selectedMaterial?.id === confirmDelete.id) setSelectedMaterial(null)
+      setConfirmDelete(null)
+      await load()
+    } catch {
+      showToast('Failed to delete material', 'danger')
     }
   }
 
@@ -544,6 +567,14 @@ export default function MaterialList() {
                             >
                               {m.status === 'active' ? 'Deactivate' : 'Activate'}
                             </button>
+                            {canImport && (
+                              <button
+                                className="btn btn-sm btn-outline-danger"
+                                onClick={e => { e.stopPropagation(); setConfirmDelete(m) }}
+                              >
+                                Delete
+                              </button>
+                            )}
                           </div>
                         </td>
                       )}
@@ -602,6 +633,15 @@ export default function MaterialList() {
         confirmLabel={confirmToggle?.status === 'active' ? 'Deactivate' : 'Activate'}
         onConfirm={handleToggle}
         onCancel={() => setConfirmToggle(null)}
+      />
+
+      <ConfirmModal
+        show={confirmDelete !== null}
+        title="Delete Material"
+        message={confirmDelete ? `Delete ${confirmDelete.name}? It is also removed from every product recipe that uses it.` : ''}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(null)}
       />
     </div>
   )

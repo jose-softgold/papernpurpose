@@ -171,6 +171,7 @@ export default function SupplierList() {
   const [showForm, setShowForm] = useState(false)
   const [editSupplier, setEditSupplier] = useState<Supplier | null>(null)
   const [confirmToggle, setConfirmToggle] = useState<Supplier | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<Supplier | null>(null)
   const [saving, setSaving] = useState(false)
   const { toasts, showToast } = useToast()
   const { role } = useAuth()
@@ -281,6 +282,18 @@ export default function SupplierList() {
     }
   }
 
+  const handleDelete = async () => {
+    if (!confirmDelete) return
+    try {
+      await supplierService.delete(confirmDelete.id, displayName(confirmDelete))
+      showToast('Supplier deleted')
+      setConfirmDelete(null)
+      await load()
+    } catch {
+      showToast('Failed to delete supplier', 'danger')
+    }
+  }
+
   const handleExport = () => {
     exportToCSV(filtered.map(s => ({
       type: s.type,
@@ -387,6 +400,9 @@ export default function SupplierList() {
                           >
                             {s.status === 'active' ? 'Deactivate' : 'Activate'}
                           </button>
+                          {canImport && (
+                            <button className="btn btn-sm btn-outline-danger" onClick={() => setConfirmDelete(s)}>Delete</button>
+                          )}
                         </div>
                       </td>
                     )}
@@ -434,6 +450,15 @@ export default function SupplierList() {
         confirmLabel={confirmToggle?.status === 'active' ? 'Deactivate' : 'Activate'}
         onConfirm={handleToggle}
         onCancel={() => setConfirmToggle(null)}
+      />
+
+      <ConfirmModal
+        show={confirmDelete !== null}
+        title="Delete Supplier"
+        message={confirmDelete ? `Delete ${displayName(confirmDelete)}? Past purchases keep pointing at this supplier but will show its id.` : ''}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(null)}
       />
     </div>
   )

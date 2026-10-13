@@ -16,6 +16,7 @@ import PageHeader from '../../components/PageHeader'
 import DataGrid from '../../components/DataGrid'
 import ToastContainer from '../../components/ToastContainer'
 import WorkerPicker from '../../components/WorkerPicker'
+import ConfirmModal from '../../components/ConfirmModal'
 import type { Product, ProductVersion, BomItem, Material, Production, Order, OrderItem, WorkerOption, OccasionSeason } from '../../types'
 import { occasionService } from '../../services/occasions'
 import { useAuth } from '../../hooks/useAuth'
@@ -95,6 +96,18 @@ export default function ProductionPage() {
 
   const [submitting, setSubmitting] = useState(false)
   const [completingId, setCompletingId] = useState<string | null>(null)
+
+  const [editing, setEditing] = useState<{
+    production: Production
+    date: string
+    expected: string
+    actual: string
+    notes: string
+    assignedIds: string[]
+    materials: Array<{ materialId: string; name: string; unit: string; actualQty: string }>
+  } | null>(null)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [deleting, setDeleting] = useState<Production | null>(null)
 
   useEffect(() => {
     productService.getAll().then(all => {
@@ -395,6 +408,81 @@ export default function ProductionPage() {
     }
   }
 
+  const toLocalInput = (ts: Timestamp | null | undefined) => {
+    const d = ts?.toDate?.()
+    if (!d) return todayStr()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+
+  const startEdit = async (p: Production) => {
+    try {
+      const [mats, allMats] = await Promise.all([
+        productionService.getMaterials(p.id),
+        materialService.getAll(),
+      ])
+      const matMap = Object.fromEntries(allMats.map(m => [m.id, m]))
+      setEditing({
+        production: p,
+        date: toLocalInput(p.productionDate),
+        expected: String(p.expectedQuantity ?? p.quantity),
+        actual: String(p.actualQuantity ?? p.quantity),
+        notes: p.notes ?? '',
+        assignedIds: p.assignedWorkerIds ?? [],
+        materials: mats.map(m => ({
+          materialId: m.materialId,
+          name: matMap[m.materialId]?.name ?? m.materialId,
+          unit: matMap[m.materialId]?.unit ?? '',
+          actualQty: String(m.actualQuantity),
+        })),
+      })
+    } catch {
+      showToast('Could not open this batch', 'danger')
+    }
+  }
+
+  const saveEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editing || savingEdit) return
+    const expected = parseFloat(editing.expected)
+    if (!(expected > 0)) {
+      showToast('Expected qty must be more than 0', 'warning')
+      return
+    }
+    setSavingEdit(true)
+    try {
+      await productionService.update(editing.production.id, {
+        productionDate: Timestamp.fromDate(new Date(editing.date)),
+        expectedQuantity: expected,
+        actualQuantity: parseFloat(editing.actual) || 0,
+        notes: editing.notes,
+        assignedWorkerIds: editing.assignedIds,
+        assignedWorkerNames: workers.filter(w => editing.assignedIds.includes(w.id)).map(w => w.name),
+        materials: editing.materials.map(m => ({ materialId: m.materialId, actualQty: parseFloat(m.actualQty) || 0 })),
+      })
+      showToast('Batch updated', 'success')
+      setEditing(null)
+      loadHistory()
+    } catch (err) {
+      showToast('Failed to update batch', 'danger')
+      console.error(err)
+    } finally {
+      setSavingEdit(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleting) return
+    try {
+      await productionService.delete(deleting.id)
+      showToast('Batch deleted', 'success')
+      setDeleting(null)
+      loadHistory()
+    } catch (err) {
+      showToast('Failed to delete batch', 'danger')
+      console.error(err)
+    }
+  }
+
   const visibleHistory = history.filter(p => {
     if (isWorker) return !!user && (p.assignedWorkerIds ?? []).includes(user.uid)
     if (!myWorkOnly || !user) return true
@@ -683,11 +771,19 @@ export default function ProductionPage() {
                           }`}>{p.status}</span>
                         </td>
                         <td>
-                          {p.status !== 'COMPLETED' && p.status !== 'CANCELLED' && (
-                            <button className="btn btn-sm btn-outline-primary" disabled={completingId === p.id} onClick={() => finishExisting(p)}>
-                              Record actuals
-                            </button>
-                          )}
+                          <div className="d-flex gap-1 flex-wrap">
+                            {p.status !== 'COMPLETED' && p.status !== 'CANCELLED' && (
+                              <button className="btn btn-sm btn-outline-primary" disabled={completingId === p.id} onClick={() => finishExisting(p)}>
+                                Record actuals
+                              </button>
+                            )}
+                            {canAssign && (
+                              <>
+                                <button className="btn btn-sm btn-outline-secondary" onClick={() => void startEdit(p)}>Edit</button>
+                                <button className="btn btn-sm btn-outline-danger" onClick={() => setDeleting(p)}>Delete</button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -698,6 +794,118 @@ export default function ProductionPage() {
           )}
         </div>
       </div>
+
+      {editing && (
+        <>
+          <div className="modal-backdrop fade show" />
+          <div className="modal d-block" tabIndex={-1}>
+            <div className="modal-dialog modal-lg modal-dialog-scrollable">
+              <form className="modal-content" onSubmit={e => void saveEdit(e)}>
+                <div className="modal-header">
+                  <h5 className="modal-title">
+                    Edit batch {editing.production.batchCode || editing.production.id.slice(0, 6)}
+                  </h5>
+                  <button type="button" className="btn-close" disabled={savingEdit} onClick={() => setEditing(null)} />
+                </div>
+                <div className="modal-body">
+                  <div className="row g-3">
+                    <div className="col-md-4">
+                      <label className="form-label">Production date</label>
+                      <input
+                        type="datetime-local"
+                        className="form-control"
+                        value={editing.date}
+                        onChange={e => setEditing(prev => prev && { ...prev, date: e.target.value })}
+                      />
+                    </div>
+                    <div className="col-6 col-md-4">
+                      <label className="form-label">Expected qty</label>
+                      <input
+                        type="number"
+                        min={1}
+                        className="form-control"
+                        value={editing.expected}
+                        onChange={e => setEditing(prev => prev && { ...prev, expected: e.target.value })}
+                      />
+                    </div>
+                    {editing.production.status === 'COMPLETED' && (
+                      <div className="col-6 col-md-4">
+                        <label className="form-label">Actual qty</label>
+                        <input
+                          type="number"
+                          min={0}
+                          className="form-control"
+                          value={editing.actual}
+                          onChange={e => setEditing(prev => prev && { ...prev, actual: e.target.value })}
+                        />
+                      </div>
+                    )}
+                    <div className="col-12">
+                      <label className="form-label">Notes</label>
+                      <textarea
+                        className="form-control"
+                        rows={2}
+                        value={editing.notes}
+                        onChange={e => setEditing(prev => prev && { ...prev, notes: e.target.value })}
+                      />
+                    </div>
+                    <div className="col-md-6">
+                      <WorkerPicker
+                        workers={workers}
+                        selectedIds={editing.assignedIds}
+                        onChange={ids => setEditing(prev => prev && { ...prev, assignedIds: ids })}
+                      />
+                    </div>
+                  </div>
+
+                  {editing.production.status === 'COMPLETED' && editing.materials.length > 0 && (
+                    <div className="mt-3">
+                      <h6>Materials used</h6>
+                      {editing.materials.map((m, idx) => (
+                        <div key={m.materialId} className="row g-2 align-items-center mb-2">
+                          <div className="col-6">{m.name}</div>
+                          <div className="col-6">
+                            <div className="input-group input-group-sm">
+                              <input
+                                type="number"
+                                min={0}
+                                step="0.001"
+                                className="form-control"
+                                value={m.actualQty}
+                                onChange={e => setEditing(prev => prev && {
+                                  ...prev,
+                                  materials: prev.materials.map((row, i) => i === idx ? { ...row, actualQty: e.target.value } : row),
+                                })}
+                              />
+                              {m.unit && <span className="input-group-text">{m.unit}</span>}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <div className="form-text">Stock moves only by the difference from what this batch already used and made.</div>
+                    </div>
+                  )}
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn btn-secondary" disabled={savingEdit} onClick={() => setEditing(null)}>Cancel</button>
+                  <button type="submit" className="btn btn-primary" disabled={savingEdit}>{savingEdit ? 'Saving…' : 'Save changes'}</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </>
+      )}
+
+      <ConfirmModal
+        show={deleting !== null}
+        title="Delete Batch"
+        message={deleting
+          ? `Delete batch ${deleting.batchCode || deleting.id.slice(0, 6)}? ${deleting.status === 'COMPLETED' ? 'Materials it used go back into stock and the finished goods it made are taken out.' : 'This cannot be undone.'}`
+          : ''}
+        confirmLabel="Delete"
+        onConfirm={() => void handleDelete()}
+        onCancel={() => setDeleting(null)}
+      />
     </div>
   )
 }

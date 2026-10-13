@@ -195,11 +195,13 @@ export default function ExpensePage() {
     try {
       const personal: Record<string, number> = {}
       for (const [k, v] of Object.entries(draftPersonal)) {
+        if (!String(v).trim()) continue
         const n = Number(v)
         if (k.trim() && !Number.isNaN(n) && n >= 0) personal[k.trim().toLowerCase()] = n
       }
       const business: Record<string, number> = {}
       for (const [k, v] of Object.entries(draftBusiness)) {
+        if (!String(v).trim()) continue
         const n = Number(v)
         if (!Number.isNaN(n) && n >= 0) business[k] = n
       }
@@ -431,17 +433,32 @@ export default function ExpensePage() {
                             <span className="text-capitalize">{key}</span>
                           </div>
                           <div className="col-sm-8">
-                            <input
-                              type="number"
-                              min={0}
-                              step={1}
-                              className="form-control form-control-sm"
-                              placeholder="Monthly budget ₹"
-                              value={val}
-                              onChange={e =>
-                                setDraftPersonal(prev => ({ ...prev, [key]: e.target.value }))
-                              }
-                            />
+                            <div className="input-group input-group-sm">
+                              <input
+                                type="number"
+                                min={0}
+                                step={1}
+                                className="form-control"
+                                placeholder="Monthly budget ₹"
+                                value={val}
+                                onChange={e =>
+                                  setDraftPersonal(prev => ({ ...prev, [key]: e.target.value }))
+                                }
+                              />
+                              <button
+                                type="button"
+                                className="btn btn-outline-danger"
+                                onClick={() =>
+                                  setDraftPersonal(prev => {
+                                    const next = { ...prev }
+                                    delete next[key]
+                                    return next
+                                  })
+                                }
+                              >
+                                Remove
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ))
@@ -452,17 +469,27 @@ export default function ExpensePage() {
                     <div key={key} className="row g-2 align-items-center mb-2">
                       <div className="col-sm-4">{BUSINESS_EXPENSE_BUCKET_LABELS[key as BusinessExpenseBucket]}</div>
                       <div className="col-sm-8">
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          className="form-control form-control-sm"
-                          placeholder="Monthly budget ₹"
-                          value={draftBusiness[key] ?? ''}
-                          onChange={e =>
-                            setDraftBusiness(prev => ({ ...prev, [key]: e.target.value }))
-                          }
-                        />
+                        <div className="input-group input-group-sm">
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            className="form-control"
+                            placeholder="Monthly budget ₹"
+                            value={draftBusiness[key] ?? ''}
+                            onChange={e =>
+                              setDraftBusiness(prev => ({ ...prev, [key]: e.target.value }))
+                            }
+                          />
+                          <button
+                            type="button"
+                            className="btn btn-outline-danger"
+                            disabled={!draftBusiness[key]}
+                            onClick={() => setDraftBusiness(prev => ({ ...prev, [key]: '' }))}
+                          >
+                            Remove
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}

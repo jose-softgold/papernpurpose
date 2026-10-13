@@ -12,6 +12,7 @@ import DataGrid from '../../components/DataGrid'
 import StatusBadge from '../../components/StatusBadge'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
+import ConfirmModal from '../../components/ConfirmModal'
 import { formatCurrency, formatDate } from '../../utils/format'
 import { exportToCSV } from '../../utils/export'
 import OrderFormModal, {
@@ -38,6 +39,7 @@ export default function OrderList() {
   const [editOrder, setEditOrder] = useState<Order | null>(null)
   const [editLines, setEditLines] = useState<OrderFormLine[] | undefined>(undefined)
   const [saving, setSaving] = useState(false)
+  const [deleting, setDeleting] = useState<OrderRow | null>(null)
 
   const { role, user } = useAuth()
   const isWorker = roleIsWorker(role)
@@ -78,6 +80,18 @@ export default function OrderList() {
       setFormMode('edit')
     } catch {
       showToast('Failed to load order for editing', 'danger')
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleting) return
+    try {
+      await orderService.delete(deleting.id)
+      showToast('Order deleted')
+      setDeleting(null)
+      await load()
+    } catch {
+      showToast('Failed to delete order', 'danger')
     }
   }
 
@@ -222,6 +236,11 @@ export default function OrderList() {
                               Edit
                             </button>
                           )}
+                          {canMaster && (
+                            <button className="btn btn-outline-danger btn-sm" onClick={() => setDeleting(r)}>
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -245,6 +264,17 @@ export default function OrderList() {
         saving={saving}
         onCancel={closeForm}
         onSubmit={handleFormSubmit}
+      />
+
+      <ConfirmModal
+        show={deleting !== null}
+        title="Delete Order"
+        message={deleting
+          ? `Delete order ${deleting.id.slice(0, 6).toUpperCase()}${deleting.customerName ? ` for ${deleting.customerName}` : ''}? ${deleting.status === 'COMPLETED' ? 'The stock it sold is put back.' : 'This cannot be undone.'}`
+          : ''}
+        confirmLabel="Delete"
+        onConfirm={() => void handleDelete()}
+        onCancel={() => setDeleting(null)}
       />
     </div>
   )

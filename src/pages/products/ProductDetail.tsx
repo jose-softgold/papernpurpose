@@ -20,6 +20,8 @@ import { sortByNewest } from '../../utils/sort'
 import { gstLabel, lineTax, marginPctFromPrices, effectiveTargetMargin, DEFAULT_TARGET_MARGIN_PCT } from '../../utils/tax'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import { GstRateSelect } from '../../components/GstFields'
+import { useAuth } from '../../hooks/useAuth'
+import { canWriteMaster } from '../../utils/roles'
 
 type Tab = 'overview' | 'packaging' | 'performance' | 'production' | 'sales' | 'customers' | 'bom'
 
@@ -75,6 +77,8 @@ export default function ProductDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { toasts, showToast } = useToast()
+  const { role } = useAuth()
+  const canDelete = canWriteMaster(role)
 
   // Core data
   const [product, setProduct] = useState<Product | null>(null)
@@ -127,6 +131,7 @@ export default function ProductDetail() {
   const [editBomItem, setEditBomItem] = useState<BomItem | null>(null)
   const [editBomForm, setEditBomForm] = useState({ quantity: '', unit: '' })
   const [deleteBomId, setDeleteBomId] = useState<string | null>(null)
+  const [confirmDeleteProduct, setConfirmDeleteProduct] = useState(false)
   const [savingUnitPrice, setSavingUnitPrice] = useState(false)
   const [unitPriceDraft, setUnitPriceDraft] = useState('')
   const bomQtyRef = useRef<HTMLInputElement>(null)
@@ -688,6 +693,9 @@ export default function ProductDetail() {
         <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/products')}>&larr; Back</button>
         <h4 className="pc-page-title">{product.name}</h4>
         <StatusBadge status={product.status} />
+        {canDelete && (
+          <button className="btn btn-outline-danger btn-sm" onClick={() => setConfirmDeleteProduct(true)}>Delete</button>
+        )}
         <div className="ms-auto small text-muted d-flex flex-wrap gap-3">
           <span>
             Selling unit price{' '}
@@ -1578,6 +1586,22 @@ export default function ProductDetail() {
         confirmLabel="Delete"
         onConfirm={handleDeleteBom}
         onCancel={() => setDeleteBomId(null)}
+      />
+      <ConfirmModal
+        show={confirmDeleteProduct}
+        title="Delete Product"
+        message={`Delete ${product.name} with all its versions and recipes? Past orders and batches keep their own copies of the numbers.`}
+        confirmLabel="Delete"
+        onConfirm={async () => {
+          try {
+            await productService.delete(product.id, product.name)
+            navigate('/products')
+          } catch {
+            setConfirmDeleteProduct(false)
+            showToast('Failed to delete product', 'danger')
+          }
+        }}
+        onCancel={() => setConfirmDeleteProduct(false)}
       />
       <ConfirmModal
         show={!!pendingFork}

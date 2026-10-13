@@ -52,7 +52,7 @@ export const expenseService = {
     await setDoc(
       doc(db, 'meta', BUDGETS_DOC),
       { personal: cleanPersonal, business: cleanBusiness, updatedAt: serverTimestamp() },
-      { merge: true },
+      { mergeFields: ['personal', 'business', 'updatedAt'] },
     )
   },
 

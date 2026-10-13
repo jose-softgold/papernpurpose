@@ -4,6 +4,7 @@ import { Purchase, PurchaseItem } from '../types'
 import { lineTax, roundMoney } from '../utils/tax'
 import { createHash } from '../utils/hash'
 import { auditService } from './audit'
+import { inventoryService } from './inventory'
 
 export function purchaseIsPaid(p: Purchase, bankPaid = 0): boolean {
   if (p.paymentStatus === 'paid') return true
@@ -215,6 +216,16 @@ export const purchaseService = {
         purchasedByName: params.purchasedByName ?? null,
       },
     })
+  },
+
+  async delete(id: string): Promise<void> {
+    const existing = await this.getItems(id)
+    const batch = writeBatch(db)
+    await inventoryService.reverseReference(batch, 'purchase', id, 'Purchase deleted')
+    existing.forEach(item => batch.delete(doc(db, 'purchaseItems', item.id)))
+    batch.delete(doc(db, 'purchases', id))
+    await batch.commit()
+    await auditService.log({ action: 'purchase.delete', entityType: 'purchase', entityId: id, before: { itemCount: existing.length } })
   },
 
   /** One cash payment that marks the selected open purchases as paid. */

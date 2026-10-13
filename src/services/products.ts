@@ -5,6 +5,7 @@ import { db } from '../firebase/config'
 import { Product, ProductVersion } from '../types'
 import { sortByNewest } from '../utils/sort'
 import { bomService } from './bom'
+import { auditService } from './audit'
 
 function nextVersionLabel(existing: ProductVersion[]): string {
   let max = 0
@@ -37,6 +38,18 @@ export const productService = {
 
   async update(id: string, data: Partial<Product>): Promise<void> {
     await updateDoc(doc(db, 'products', id), { ...data, updatedAt: serverTimestamp() })
+  },
+
+  /** Removes the product with its versions and their BOM lines. */
+  async delete(id: string, name?: string): Promise<void> {
+    const versions = await productService.getVersions(id)
+    const boms = await Promise.all(versions.map(v => bomService.getByVersionId(v.id)))
+    const batch = writeBatch(db)
+    boms.flat().forEach(b => batch.delete(doc(db, 'bomItems', b.id)))
+    versions.forEach(v => batch.delete(doc(db, 'productVersions', v.id)))
+    batch.delete(doc(db, 'products', id))
+    await batch.commit()
+    await auditService.log({ action: 'product.delete', entityType: 'product', entityId: id, before: { name: name ?? null } })
   },
 
   async getVersions(productId: string): Promise<ProductVersion[]> {

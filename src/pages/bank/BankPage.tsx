@@ -109,6 +109,16 @@ export default function BankPage() {
   const [tagCustomCategory, setTagCustomCategory] = useState('')
   const [tagMarkCompleted, setTagMarkCompleted] = useState(false)
 
+  const [editTx, setEditTx] = useState<{
+    tx: BankTransaction
+    occurredAt: string
+    amount: string
+    direction: 'credit' | 'debit'
+    description: string
+    counterparty: string
+  } | null>(null)
+  const [deleteTx, setDeleteTx] = useState<BankTransaction | null>(null)
+
   const [categoriesOpen, setCategoriesOpen] = useState(false)
   const [newCategory, setNewCategory] = useState('')
   const [bankTab, setBankTab] = useState<'transactions' | 'float'>('transactions')
@@ -340,6 +350,48 @@ export default function BankPage() {
     setTagCategory(tx.category || tx.personalCategory || '')
     setTagCustomCategory('')
     setTagMarkCompleted(false)
+  }
+
+  function openEditTx(tx: BankTransaction) {
+    const d = tx.occurredAt?.toDate?.() ?? new Date()
+    const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    setEditTx({
+      tx,
+      occurredAt: local,
+      amount: String(tx.amount),
+      direction: tx.direction,
+      description: tx.description ?? '',
+      counterparty: tx.counterparty ?? '',
+    })
+  }
+
+  async function saveEditTx(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editTx) return
+    const amount = parseFloat(editTx.amount)
+    const occurredAt = new Date(editTx.occurredAt)
+    if (!(amount > 0)) {
+      showToast('Enter an amount greater than 0', 'warning')
+      return
+    }
+    if (Number.isNaN(occurredAt.getTime())) {
+      showToast('Enter a valid date', 'warning')
+      return
+    }
+    const { tx, direction, description, counterparty } = editTx
+    setEditTx(null)
+    await run(
+      tx.id,
+      () => bankService.updateDetails(tx.id, { occurredAt, amount, direction, description, counterparty }),
+      'Transaction updated',
+    )
+  }
+
+  async function confirmDeleteTx() {
+    if (!deleteTx) return
+    const id = deleteTx.id
+    setDeleteTx(null)
+    await run(id, () => bankService.delete(id), 'Transaction deleted')
   }
 
   /** After classify, drop filters that would hide the updated row. */
@@ -1014,6 +1066,22 @@ export default function BankPage() {
                               Clear
                             </button>
                           )}
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline-primary"
+                            disabled={busy}
+                            onClick={() => openEditTx(tx)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-sm btn-outline-danger"
+                            disabled={busy}
+                            onClick={() => setDeleteTx(tx)}
+                          >
+                            Delete
+                          </button>
                         </div>
                       </td>
                     )}
@@ -1024,6 +1092,109 @@ export default function BankPage() {
           </>
         )}
       </DataGrid>
+        </>
+      )}
+
+      {editTx && (
+        <>
+          <div className="modal-backdrop fade show" />
+          <div className="modal d-block" tabIndex={-1}>
+            <div className="modal-dialog">
+              <form className="modal-content" onSubmit={e => void saveEditTx(e)}>
+                <div className="modal-header">
+                  <h5 className="modal-title">Edit transaction</h5>
+                  <button type="button" className="btn-close" onClick={() => setEditTx(null)} />
+                </div>
+                <div className="modal-body">
+                  <div className="row g-2">
+                    <div className="col-md-6">
+                      <label className="form-label">Date</label>
+                      <input
+                        type="datetime-local"
+                        className="form-control"
+                        value={editTx.occurredAt}
+                        onChange={e => setEditTx(prev => prev && { ...prev, occurredAt: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div className="col-6 col-md-3">
+                      <label className="form-label">Amount (₹)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        className="form-control"
+                        value={editTx.amount}
+                        onChange={e => setEditTx(prev => prev && { ...prev, amount: e.target.value })}
+                        required
+                      />
+                    </div>
+                    <div className="col-6 col-md-3">
+                      <label className="form-label">Direction</label>
+                      <select
+                        className="form-select"
+                        value={editTx.direction}
+                        onChange={e => setEditTx(prev => prev && { ...prev, direction: e.target.value === 'credit' ? 'credit' : 'debit' })}
+                      >
+                        <option value="debit">Debit (out)</option>
+                        <option value="credit">Credit (in)</option>
+                      </select>
+                    </div>
+                    <div className="col-12">
+                      <label className="form-label">Counterparty</label>
+                      <input
+                        className="form-control"
+                        value={editTx.counterparty}
+                        onChange={e => setEditTx(prev => prev && { ...prev, counterparty: e.target.value })}
+                      />
+                    </div>
+                    <div className="col-12">
+                      <label className="form-label">Description</label>
+                      <input
+                        className="form-control"
+                        value={editTx.description}
+                        onChange={e => setEditTx(prev => prev && { ...prev, description: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn btn-secondary" onClick={() => setEditTx(null)}>Cancel</button>
+                  <button type="submit" className="btn btn-primary">Save changes</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </>
+      )}
+
+      {deleteTx && (
+        <>
+          <div className="modal-backdrop fade show" />
+          <div className="modal d-block" tabIndex={-1}>
+            <div className="modal-dialog">
+              <div className="modal-content">
+                <div className="modal-header">
+                  <h5 className="modal-title">Delete transaction</h5>
+                  <button type="button" className="btn-close" onClick={() => setDeleteTx(null)} />
+                </div>
+                <div className="modal-body">
+                  <p className="mb-2">
+                    Delete the {formatCurrency(deleteTx.amount)} {deleteTx.direction} on {formatDate(deleteTx.occurredAt)}?
+                  </p>
+                  {(deleteTx.source === 'alert' || deleteTx.source === 'statement') && (
+                    <p className="small text-muted mb-0">
+                      This came from a bank email. A later Gmail sync can bring it back; use Ignore if you just want it out of your totals.
+                    </p>
+                  )}
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn btn-secondary" onClick={() => setDeleteTx(null)}>Cancel</button>
+                  <button type="button" className="btn btn-danger" onClick={() => void confirmDeleteTx()}>Delete</button>
+                </div>
+              </div>
+            </div>
+          </div>
         </>
       )}
 

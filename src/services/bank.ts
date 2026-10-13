@@ -9,6 +9,7 @@ import {
   where,
   orderBy,
   updateDoc,
+  deleteDoc,
   serverTimestamp,
   Timestamp,
   limit,
@@ -204,6 +205,28 @@ export const bankService = {
       reviewedBy: actorId(),
     })
     await this.rememberTags(cleaned)
+  },
+
+  async updateDetails(id: string, data: {
+    occurredAt: Date
+    amount: number
+    direction: BankDirection
+    description: string
+    counterparty: string
+  }): Promise<void> {
+    await updateDoc(doc(db, 'bankTransactions', id), {
+      occurredAt: Timestamp.fromDate(data.occurredAt),
+      amount: data.amount,
+      direction: data.direction,
+      description: data.description.trim(),
+      counterparty: data.counterparty.trim(),
+      updatedAt: serverTimestamp(),
+      reviewedBy: actorId(),
+    })
+  },
+
+  async delete(id: string): Promise<void> {
+    await deleteDoc(doc(db, 'bankTransactions', id))
   },
 
   async ignore(id: string): Promise<void> {

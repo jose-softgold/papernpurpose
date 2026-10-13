@@ -367,6 +367,17 @@ export const orderService = {
     })
   },
 
+  /** Removes the order and its lines; a completed order also gets its sale put back into stock. */
+  async delete(id: string): Promise<void> {
+    const items = await orderService.getItems(id)
+    const batch = writeBatch(db)
+    await inventoryService.reverseReference(batch, 'order', id, 'Order deleted')
+    items.forEach(item => batch.delete(doc(db, 'orderItems', item.id)))
+    batch.delete(doc(db, 'orders', id))
+    await batch.commit()
+    await auditService.log({ action: 'order.delete', entityType: 'order', entityId: id, before: { itemCount: items.length } })
+  },
+
   async assign(id: string, workerIds: string[], workerNames: string[], assignedBy: string): Promise<void> {
     await updateDoc(doc(db, 'orders', id), {
       assignedWorkerIds: workerIds,

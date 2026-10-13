@@ -7,7 +7,10 @@ import { Supplier } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
+import ConfirmModal from '../../components/ConfirmModal'
 import { formatDate } from '../../utils/format'
+import { useAuth } from '../../hooks/useAuth'
+import { canWriteMaster } from '../../utils/roles'
 
 function resolveMapUrl(link: string): string {
   if (/^-?\d+(\.\d+)?,-?\d+(\.\d+)?$/.test(link.trim())) {
@@ -35,6 +38,20 @@ export default function SupplierDetail() {
     phone: '', email: '', address: '', city: '', notes: '', mapLink: '', gstin: '',
   })
   const { toasts, showToast } = useToast()
+  const { role } = useAuth()
+  const canDelete = canWriteMaster(role)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const handleDelete = async () => {
+    if (!id || !supplier) return
+    try {
+      await supplierService.delete(id, displayName(supplier))
+      navigate('/suppliers')
+    } catch {
+      setConfirmDelete(false)
+      showToast('Failed to delete supplier', 'danger')
+    }
+  }
 
   useEffect(() => {
     if (!id) return
@@ -150,6 +167,14 @@ export default function SupplierDetail() {
   return (
     <div>
       <ToastContainer toasts={toasts} />
+      <ConfirmModal
+        show={confirmDelete}
+        title="Delete Supplier"
+        message={`Delete ${displayName(supplier)}? Past purchases keep pointing at this supplier but will show its id.`}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       <div className="d-flex align-items-center gap-3 mb-4 flex-wrap">
         <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/suppliers')}>&larr; Back</button>
@@ -172,7 +197,12 @@ export default function SupplierDetail() {
         <div className="card-header d-flex justify-content-between align-items-center">
           <h5 className="mb-0">Supplier Information</h5>
           {!editing && (
-            <button className="btn btn-sm btn-outline-primary" onClick={() => setEditing(true)}>Edit</button>
+            <div className="d-flex gap-2">
+              <button className="btn btn-sm btn-outline-primary" onClick={() => setEditing(true)}>Edit</button>
+              {canDelete && (
+                <button className="btn btn-sm btn-outline-danger" onClick={() => setConfirmDelete(true)}>Delete</button>
+              )}
+            </div>
           )}
         </div>
         <div className="card-body">

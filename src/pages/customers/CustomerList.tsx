@@ -185,6 +185,7 @@ export default function CustomerList() {
   const [showForm, setShowForm] = useState(false)
   const [editCustomer, setEditCustomer] = useState<Customer | null>(null)
   const [confirmToggle, setConfirmToggle] = useState<Customer | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<Customer | null>(null)
   const [saving, setSaving] = useState(false)
   const { toasts, showToast } = useToast()
 
@@ -299,6 +300,18 @@ export default function CustomerList() {
       await load()
     } catch {
       showToast('Failed to update status', 'danger')
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return
+    try {
+      await customerService.delete(confirmDelete.id, displayName(confirmDelete))
+      showToast('Customer deleted')
+      setConfirmDelete(null)
+      await load()
+    } catch {
+      showToast('Failed to delete customer', 'danger')
     }
   }
 
@@ -424,6 +437,11 @@ export default function CustomerList() {
                         >
                           {c.status === 'active' ? 'Deactivate' : 'Activate'}
                         </button>
+                        {canEdit && (
+                          <button className="btn btn-sm btn-outline-danger" onClick={() => setConfirmDelete(c)}>
+                            Delete
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -472,6 +490,15 @@ export default function CustomerList() {
         confirmLabel={confirmToggle?.status === 'active' ? 'Deactivate' : 'Activate'}
         onConfirm={handleToggle}
         onCancel={() => setConfirmToggle(null)}
+      />
+
+      <ConfirmModal
+        show={confirmDelete !== null}
+        title="Delete Customer"
+        message={confirmDelete ? `Delete ${displayName(confirmDelete)}? Past orders keep the name already on them.` : ''}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(null)}
       />
     </div>
   )

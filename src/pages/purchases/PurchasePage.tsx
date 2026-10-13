@@ -15,6 +15,7 @@ import EmptyState from '../../components/EmptyState'
 import PageHeader from '../../components/PageHeader'
 import DataGrid from '../../components/DataGrid'
 import ToastContainer from '../../components/ToastContainer'
+import ConfirmModal from '../../components/ConfirmModal'
 import QuickSelect from '../../components/QuickSelect'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import { GstRateSelect } from '../../components/GstFields'
@@ -48,7 +49,7 @@ export default function PurchasePage() {
   const { toasts, showToast } = useToast()
   const { user, userDoc, role } = useAuth()
   const isWorker = roleIsWorker(role)
-  const canRecordCash = isAdminOrOwner(role)
+  const canManage = isAdminOrOwner(role)
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
   const [materials, setMaterials] = useState<Material[]>([])
@@ -62,6 +63,7 @@ export default function PurchasePage() {
   const [existingBillUrls, setExistingBillUrls] = useState<string[]>([])
   const [editingId, setEditingId] = useState<string | null>(null)
   const [loadingEdit, setLoadingEdit] = useState(false)
+  const [deleting, setDeleting] = useState<Purchase | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const [quick, setQuick] = useState<'supplier' | 'material' | null>(null)
@@ -224,6 +226,20 @@ export default function PurchasePage() {
       console.error(err)
     } finally {
       setLoadingEdit(false)
+    }
+  }
+
+  const handleDelete = async () => {
+    if (!deleting) return
+    try {
+      await purchaseService.delete(deleting.id)
+      if (editingId === deleting.id) resetForm()
+      showToast('Purchase deleted and stock reversed', 'success')
+      setDeleting(null)
+      loadHistory()
+    } catch (err) {
+      showToast('Failed to delete purchase', 'danger')
+      console.error(err)
     }
   }
 
@@ -572,15 +588,24 @@ export default function PurchasePage() {
                           <td>{p.itemCount ?? '—'}</td>
                           <td>{p.totalQty ?? '—'}</td>
                           <td>
-                            {canRecordCash && (
-                              <button
-                                type="button"
-                                className="btn btn-sm btn-outline-primary"
-                                disabled={loadingEdit}
-                                onClick={() => void startEdit(p)}
-                              >
-                                Edit
-                              </button>
+                            {canManage && (
+                              <div className="d-flex gap-1">
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-primary"
+                                  disabled={loadingEdit}
+                                  onClick={() => void startEdit(p)}
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-danger"
+                                  onClick={() => setDeleting(p)}
+                                >
+                                  Delete
+                                </button>
+                              </div>
                             )}
                           </td>
                           <td>
@@ -612,6 +637,17 @@ export default function PurchasePage() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        show={deleting !== null}
+        title="Delete Purchase"
+        message={deleting
+          ? `Delete the ${formatDate(deleting.purchaseDate)} purchase from ${supplierMap[deleting.supplierId]?.name ?? 'this supplier'}? The stock it added is taken back out.`
+          : ''}
+        confirmLabel="Delete"
+        onConfirm={() => void handleDelete()}
+        onCancel={() => setDeleting(null)}
+      />
 
       {viewingBills && (
         <>

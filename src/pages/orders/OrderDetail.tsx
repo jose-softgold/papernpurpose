@@ -94,6 +94,7 @@ export default function OrderDetail() {
   const [bankTxs, setBankTxs] = useState<BankTransaction[]>([])
   const [editing, setEditing] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
   const [showAddPayment, setShowAddPayment] = useState(false)
   const [savingPayment, setSavingPayment] = useState(false)
   const [paymentForm, setPaymentForm] = useState({
@@ -363,6 +364,23 @@ export default function OrderDetail() {
         onConfirm={handleCancel}
         onCancel={() => setShowCancel(false)}
       />
+      <ConfirmModal
+        show={confirmDelete}
+        title="Delete Order"
+        message={`Delete this order? ${order.status === 'COMPLETED' ? 'The stock it sold is put back.' : 'This cannot be undone.'}`}
+        confirmLabel="Delete"
+        onConfirm={async () => {
+          if (!id) return
+          try {
+            await orderService.delete(id)
+            navigate('/orders')
+          } catch {
+            setConfirmDelete(false)
+            showToast('Failed to delete order', 'danger')
+          }
+        }}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       {/* Header */}
       <div className="d-flex align-items-center gap-3 mb-4 flex-wrap">
@@ -390,6 +408,11 @@ export default function OrderDetail() {
           {canCancel && (
             <button className="btn btn-sm btn-outline-danger" onClick={() => setShowCancel(true)} disabled={transitioning}>
               Cancel Order
+            </button>
+          )}
+          {canAssign && (
+            <button className="btn btn-sm btn-danger" onClick={() => setConfirmDelete(true)} disabled={transitioning}>
+              Delete
             </button>
           )}
         </div>

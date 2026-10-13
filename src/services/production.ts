@@ -4,6 +4,7 @@ import {
 import { db, auth } from '../firebase/config'
 import { Production, ProductionMaterial } from '../types'
 import { auditService } from './audit'
+import { inventoryService, StockTarget } from './inventory'
 
 function actorId() {
   return auth.currentUser?.uid ?? ''
@@ -297,5 +298,95 @@ export const productionService = {
       entityId: id,
       after: { assignedWorkerIds: workerIds, assignedWorkerNames: workerNames },
     })
+  },
+
+  /**
+   * Edits a saved batch. Material lines keep their per-unit plan; a completed batch
+   * moves stock only by the difference from what it already posted.
+   */
+  async update(id: string, params: {
+    productionDate: Timestamp
+    expectedQuantity: number
+    actualQuantity: number
+    notes: string
+    assignedWorkerIds?: string[]
+    assignedWorkerNames?: string[]
+    materials: Array<{ materialId: string; actualQty: number }>
+  }): Promise<void> {
+    const prod = await productionService.getById(id)
+    if (!prod) throw new Error('Batch not found')
+    const existing = await productionService.getMaterials(id)
+    const completed = prod.status === 'COMPLETED'
+    const oldExpected = prod.expectedQuantity ?? prod.quantity ?? 0
+    const expected = params.expectedQuantity
+    const actual = completed ? params.actualQuantity : 0
+    const actualByMaterial = new Map(params.materials.map(m => [m.materialId, m.actualQty]))
+
+    const batch = writeBatch(db)
+    let totalMaterialCost = 0
+    for (const row of existing) {
+      const perUnit = oldExpected ? row.plannedQuantity / oldExpected : row.plannedQuantity
+      const plannedQuantity = perUnit * expected
+      const actualQuantity = completed ? (actualByMaterial.get(row.materialId) ?? row.actualQuantity) : 0
+      const totalCost = completed ? actualQuantity * row.unitCost : plannedQuantity * row.unitCost
+      totalMaterialCost += totalCost
+      batch.update(doc(db, 'productionMaterials', row.id), {
+        plannedQuantity,
+        actualQuantity,
+        wasteQuantity: completed ? Math.max(0, actualQuantity - plannedQuantity) : 0,
+        totalCost: completed ? totalCost : 0,
+      })
+    }
+
+    batch.update(doc(db, 'productions', id), {
+      productionDate: params.productionDate,
+      expectedQuantity: expected,
+      quantity: completed ? actual : expected,
+      actualQuantity: actual,
+      wasteQuantity: completed ? Math.max(0, expected - actual) : 0,
+      totalMaterialCost,
+      costPerUnit: completed ? (actual > 0 ? totalMaterialCost / actual : 0) : (expected ? totalMaterialCost / expected : 0),
+      notes: params.notes,
+      ...(params.assignedWorkerIds ? {
+        assignedWorkerIds: params.assignedWorkerIds,
+        assignedWorkerNames: params.assignedWorkerNames ?? [],
+      } : {}),
+    })
+
+    if (completed) {
+      const targets: StockTarget[] = existing.map(row => ({
+        itemType: 'material',
+        itemId: row.materialId,
+        unit: '',
+        quantity: -(actualByMaterial.get(row.materialId) ?? row.actualQuantity),
+      }))
+      targets.push({
+        itemType: 'product',
+        itemId: prod.productId,
+        unit: 'units',
+        quantity: actual,
+        occasionSeasonId: prod.occasionSeasonId ?? null,
+      })
+      await inventoryService.adjustReferenceTo(batch, 'production', id, targets, `Batch ${prod.batchCode ?? id.slice(0, 6)} edited`)
+    }
+
+    await batch.commit()
+    await auditService.log({
+      action: 'production.update',
+      entityType: 'production',
+      entityId: id,
+      after: { expectedQuantity: expected, actualQuantity: actual },
+    })
+  },
+
+  /** Removes the batch; a completed batch also puts its materials back and takes its finished goods out. */
+  async delete(id: string): Promise<void> {
+    const existing = await productionService.getMaterials(id)
+    const batch = writeBatch(db)
+    await inventoryService.reverseReference(batch, 'production', id, 'Batch deleted')
+    existing.forEach(row => batch.delete(doc(db, 'productionMaterials', row.id)))
+    batch.delete(doc(db, 'productions', id))
+    await batch.commit()
+    await auditService.log({ action: 'production.delete', entityType: 'production', entityId: id })
   },
 }

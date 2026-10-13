@@ -6,6 +6,7 @@ import { canWriteMaster } from '../../utils/roles'
 import { useAuth } from '../../hooks/useAuth'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import StatusBadge from '../../components/StatusBadge'
+import ConfirmModal from '../../components/ConfirmModal'
 
 const KIND_OPTIONS: { value: OccasionKind; label: string }[] = [
   { value: 'festival', label: 'Festival' },
@@ -30,6 +31,11 @@ export default function OccasionsManager() {
 
   const [openSeasonFor, setOpenSeasonFor] = useState<string | null>(null)
   const [openYear, setOpenYear] = useState(new Date().getFullYear())
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editForm, setEditForm] = useState({ name: '', kind: 'festival' as OccasionKind, month: '', day: '' })
+  const [deleteOccasion, setDeleteOccasion] = useState<Occasion | null>(null)
+  const [deleteSeason, setDeleteSeason] = useState<OccasionSeason | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -93,6 +99,67 @@ export default function OccasionsManager() {
       await load()
     } catch {
       showToast('Update failed', 'danger')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function startEdit(o: Occasion) {
+    setEditingId(o.id)
+    setEditForm({
+      name: o.name,
+      kind: o.kind,
+      month: o.typicalMonth ? String(o.typicalMonth) : '',
+      day: o.typicalDay ? String(o.typicalDay) : '',
+    })
+  }
+
+  async function saveEdit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editingId || !editForm.name.trim()) return
+    setBusy(true)
+    try {
+      await occasionService.updateOccasion(editingId, {
+        name: editForm.name,
+        kind: editForm.kind,
+        typicalMonth: editForm.month ? Number(editForm.month) : null,
+        typicalDay: editForm.day ? Number(editForm.day) : null,
+      })
+      showToast('Occasion updated', 'success')
+      setEditingId(null)
+      await load()
+    } catch {
+      showToast('Update failed', 'danger')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmDeleteOccasion() {
+    if (!deleteOccasion) return
+    setBusy(true)
+    try {
+      await occasionService.deleteOccasion(deleteOccasion.id)
+      showToast('Occasion deleted', 'success')
+      setDeleteOccasion(null)
+      await load()
+    } catch {
+      showToast('Delete failed', 'danger')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function confirmDeleteSeason() {
+    if (!deleteSeason) return
+    setBusy(true)
+    try {
+      await occasionService.deleteSeason(deleteSeason.id)
+      showToast('Season deleted', 'success')
+      setDeleteSeason(null)
+      await load()
+    } catch {
+      showToast('Delete failed', 'danger')
     } finally {
       setBusy(false)
     }
@@ -183,7 +250,55 @@ export default function OccasionsManager() {
                 </tr>
               </thead>
               <tbody>
-                {occasions.map(o => (
+                {occasions.map(o => editingId === o.id ? (
+                  <tr key={o.id}>
+                    <td colSpan={canEdit ? 5 : 4}>
+                      <form onSubmit={saveEdit} className="row g-2 align-items-end">
+                        <div className="col-md-4">
+                          <label className="form-label small mb-0">Name</label>
+                          <input
+                            className="form-control form-control-sm"
+                            value={editForm.name}
+                            onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+                            required
+                          />
+                        </div>
+                        <div className="col-md-3">
+                          <label className="form-label small mb-0">Kind</label>
+                          <select
+                            className="form-select form-select-sm"
+                            value={editForm.kind}
+                            onChange={e => setEditForm(f => ({ ...f, kind: e.target.value as OccasionKind }))}
+                          >
+                            {KIND_OPTIONS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)}
+                          </select>
+                        </div>
+                        <div className="col-3 col-md-1">
+                          <label className="form-label small mb-0">Month</label>
+                          <input
+                            type="number" min={1} max={12}
+                            className="form-control form-control-sm"
+                            value={editForm.month}
+                            onChange={e => setEditForm(f => ({ ...f, month: e.target.value }))}
+                          />
+                        </div>
+                        <div className="col-3 col-md-1">
+                          <label className="form-label small mb-0">Day</label>
+                          <input
+                            type="number" min={1} max={31}
+                            className="form-control form-control-sm"
+                            value={editForm.day}
+                            onChange={e => setEditForm(f => ({ ...f, day: e.target.value }))}
+                          />
+                        </div>
+                        <div className="col-6 col-md-3 d-flex gap-1">
+                          <button type="submit" className="btn btn-sm btn-success" disabled={busy}>Save</button>
+                          <button type="button" className="btn btn-sm btn-outline-secondary" onClick={() => setEditingId(null)}>Cancel</button>
+                        </div>
+                      </form>
+                    </td>
+                  </tr>
+                ) : (
                   <tr key={o.id}>
                     <td className="fw-semibold">{o.name}</td>
                     <td className="text-capitalize small">{o.kind}</td>
@@ -206,6 +321,16 @@ export default function OccasionsManager() {
                                 close
                               </button>
                             )}
+                            {canEdit && (
+                              <button
+                                type="button"
+                                className="btn btn-link btn-sm p-0 ms-1 text-danger"
+                                style={{ fontSize: '.7rem' }}
+                                onClick={() => setDeleteSeason(s)}
+                              >
+                                delete
+                              </button>
+                            )}
                           </span>
                         ))}
                         {seasonsFor(o.id).length === 0 && (
@@ -215,6 +340,22 @@ export default function OccasionsManager() {
                     </td>
                     {canEdit && (
                       <td className="text-end text-nowrap">
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-primary me-1"
+                          disabled={busy}
+                          onClick={() => startEdit(o)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-danger me-1"
+                          disabled={busy}
+                          onClick={() => setDeleteOccasion(o)}
+                        >
+                          Delete
+                        </button>
                         <button
                           type="button"
                           className="btn btn-sm btn-outline-secondary me-1"
@@ -262,6 +403,23 @@ export default function OccasionsManager() {
           </div>
         )}
       </div>
+
+      <ConfirmModal
+        show={deleteOccasion !== null}
+        title="Delete Occasion"
+        message={deleteOccasion ? `Delete ${deleteOccasion.name} and all its seasons? Stock already tagged to a season stays in the ledger.` : ''}
+        confirmLabel="Delete"
+        onConfirm={() => void confirmDeleteOccasion()}
+        onCancel={() => setDeleteOccasion(null)}
+      />
+      <ConfirmModal
+        show={deleteSeason !== null}
+        title="Delete Season"
+        message={deleteSeason ? `Delete ${deleteSeason.name}? Stock already tagged to it stays in the ledger.` : ''}
+        confirmLabel="Delete"
+        onConfirm={() => void confirmDeleteSeason()}
+        onCancel={() => setDeleteSeason(null)}
+      />
     </div>
   )
 }

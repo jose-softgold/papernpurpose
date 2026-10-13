@@ -13,6 +13,7 @@ import DataGrid from '../../components/DataGrid'
 import StatusBadge from '../../components/StatusBadge'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
+import ConfirmModal from '../../components/ConfirmModal'
 import { formatCurrency } from '../../utils/format'
 import { exportToCSV } from '../../utils/export'
 import { GstRateSelect } from '../../components/GstFields'
@@ -54,6 +55,7 @@ export default function ProductList() {
   const [versionForm, setVersionForm] = useState<AddVersionForm>(emptyVersionForm)
   const [saving, setSaving] = useState(false)
   const [selectedPhotos, setSelectedPhotos] = useState<File[]>([])
+  const [confirmDelete, setConfirmDelete] = useState<ProductRow | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const { toasts, showToast } = useToast()
 
@@ -153,6 +155,18 @@ export default function ProductList() {
     setVersionForm(emptyVersionForm)
     setNewProductId(null)
     await load()
+  }
+
+  const handleDelete = async () => {
+    if (!confirmDelete) return
+    try {
+      await productService.delete(confirmDelete.id, confirmDelete.name)
+      showToast('Product deleted')
+      setConfirmDelete(null)
+      await load()
+    } catch {
+      showToast('Failed to delete product', 'danger')
+    }
   }
 
   const handleExport = () => {
@@ -269,7 +283,12 @@ export default function ProductList() {
                         <StatusBadge status={r.status} />
                       </td>
                       <td>
-                        <Link to={`/products/${r.id}`} className="btn btn-outline-primary btn-sm">View</Link>
+                        <div className="d-flex gap-1">
+                          <Link to={`/products/${r.id}`} className="btn btn-outline-primary btn-sm">{canEdit ? 'Edit' : 'View'}</Link>
+                          {canEdit && (
+                            <button className="btn btn-outline-danger btn-sm" onClick={() => setConfirmDelete(r)}>Delete</button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -365,6 +384,15 @@ export default function ProductList() {
           </div>
         </>
       )}
+
+      <ConfirmModal
+        show={confirmDelete !== null}
+        title="Delete Product"
+        message={confirmDelete ? `Delete ${confirmDelete.name} with all its versions and recipes? Past orders and batches keep their own copies of the numbers.` : ''}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   )
 }

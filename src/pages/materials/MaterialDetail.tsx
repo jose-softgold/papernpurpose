@@ -9,6 +9,7 @@ import LoadingSpinner from '../../components/LoadingSpinner'
 import PageHeader from '../../components/PageHeader'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
+import ConfirmModal from '../../components/ConfirmModal'
 import { formatCurrency } from '../../utils/format'
 import { gstLabel } from '../../utils/tax'
 import { useAuth } from '../../hooks/useAuth'
@@ -32,6 +33,18 @@ export default function MaterialDetail() {
   const [versionId, setVersionId] = useState('')
   const [qty, setQty] = useState('1')
   const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const handleDelete = async () => {
+    if (!material) return
+    try {
+      await materialService.delete(material.id, material.name)
+      navigate('/materials')
+    } catch {
+      setConfirmDelete(false)
+      showToast('Failed to delete material', 'danger')
+    }
+  }
 
   const load = async () => {
     if (!id) return
@@ -105,10 +118,31 @@ export default function MaterialDetail() {
         subtitle="Used in products via BOM"
         icon="📦"
         actions={
-          <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/materials')}>
-            Back
-          </button>
+          <div className="d-flex gap-2">
+            <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/materials')}>
+              Back
+            </button>
+            {canBom && (
+              <>
+                <button className="btn btn-outline-primary btn-sm" onClick={() => navigate(`/materials?edit=${material.id}`)}>
+                  Edit
+                </button>
+                <button className="btn btn-outline-danger btn-sm" onClick={() => setConfirmDelete(true)}>
+                  Delete
+                </button>
+              </>
+            )}
+          </div>
         }
+      />
+
+      <ConfirmModal
+        show={confirmDelete}
+        title="Delete Material"
+        message={`Delete ${material.name}? It is also removed from every product recipe that uses it.`}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(false)}
       />
 
       <div className="card mb-3">

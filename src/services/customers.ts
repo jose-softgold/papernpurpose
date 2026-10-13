@@ -1,5 +1,5 @@
 import {
-  collection, doc, getDocs, getDoc, addDoc, updateDoc,
+  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc,
   query, orderBy, serverTimestamp,
 } from 'firebase/firestore'
 import { db } from '../firebase/config'
@@ -44,5 +44,10 @@ export const customerService = {
   async toggleStatus(id: string, current: 'active' | 'inactive'): Promise<void> {
     const next = current === 'active' ? 'inactive' : 'active'
     await updateDoc(doc(db, 'customers', id), { status: next, updatedAt: serverTimestamp() })
+  },
+
+  async delete(id: string, name?: string): Promise<void> {
+    await deleteDoc(doc(db, 'customers', id))
+    await auditService.log({ action: 'customer.delete', entityType: 'customer', entityId: id, before: { name: name ?? null } })
   },
 }

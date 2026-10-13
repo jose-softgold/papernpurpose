@@ -124,7 +124,7 @@ service cloud.firestore {
       allow update: if isAdminOrOwner() ||
         (isWorker() && assignedToMe() && onlyStatusChange() && workerAllowedTransition()) ||
         (isWorker() && assignedToMe() && onlyShipmentUpdate() && workerCanUpdateShipment());
-      allow delete: if false;
+      allow delete: if isAdminOrOwner();
     }
 
     match /orderItems/{docId} {

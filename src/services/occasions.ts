@@ -1,5 +1,5 @@
 import {
-  collection, doc, getDocs, getDoc, addDoc, updateDoc, query, where, orderBy, serverTimestamp,
+  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, query, where, orderBy, serverTimestamp, writeBatch,
 } from 'firebase/firestore'
 import { db } from '../firebase/config'
 import { Occasion, OccasionSeason, OccasionKind, Production } from '../types'
@@ -71,6 +71,18 @@ export const occasionService = {
     if (data.typicalDay !== undefined) patch.typicalDay = data.typicalDay
     if (data.status !== undefined) patch.status = data.status
     await updateDoc(doc(db, 'occasions', id), patch)
+  },
+
+  async deleteOccasion(id: string): Promise<void> {
+    const seasons = await getDocs(query(collection(db, 'occasionSeasons'), where('occasionId', '==', id)))
+    const batch = writeBatch(db)
+    seasons.docs.forEach(d => batch.delete(d.ref))
+    batch.delete(doc(db, 'occasions', id))
+    await batch.commit()
+  },
+
+  async deleteSeason(id: string): Promise<void> {
+    await deleteDoc(doc(db, 'occasionSeasons', id))
   },
 
   async getAllSeasons(): Promise<OccasionSeason[]> {

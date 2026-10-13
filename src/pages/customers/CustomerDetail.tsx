@@ -9,7 +9,10 @@ import { Customer, Order, OrderItem, Product } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
+import ConfirmModal from '../../components/ConfirmModal'
 import { formatDate, formatCurrency } from '../../utils/format'
+import { useAuth } from '../../hooks/useAuth'
+import { canWriteMaster } from '../../utils/roles'
 
 function resolveMapUrl(link: string): string {
   if (/^-?\d+(\.\d+)?,-?\d+(\.\d+)?$/.test(link.trim())) {
@@ -39,6 +42,20 @@ export default function CustomerDetail() {
     phone: '', email: '', address: '', city: '', notes: '', mapLink: '', gstin: '',
   })
   const { toasts, showToast } = useToast()
+  const { role } = useAuth()
+  const canDelete = canWriteMaster(role)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const handleDelete = async () => {
+    if (!id || !customer) return
+    try {
+      await customerService.delete(id, displayName(customer))
+      navigate('/customers')
+    } catch {
+      setConfirmDelete(false)
+      showToast('Failed to delete customer', 'danger')
+    }
+  }
 
   useEffect(() => {
     if (!id) return
@@ -179,6 +196,14 @@ export default function CustomerDetail() {
   return (
     <div>
       <ToastContainer toasts={toasts} />
+      <ConfirmModal
+        show={confirmDelete}
+        title="Delete Customer"
+        message={`Delete ${displayName(customer)}? Past orders keep the name already on them.`}
+        confirmLabel="Delete"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(false)}
+      />
 
       <div className="d-flex align-items-center gap-3 mb-4 flex-wrap">
         <button className="btn btn-outline-secondary btn-sm" onClick={() => navigate('/customers')}>
@@ -203,9 +228,16 @@ export default function CustomerDetail() {
         <div className="card-header d-flex justify-content-between align-items-center">
           <h5 className="mb-0">Customer Information</h5>
           {!editing && (
-            <button className="btn btn-sm btn-outline-primary" onClick={() => setEditing(true)}>
-              Edit
-            </button>
+            <div className="d-flex gap-2">
+              <button className="btn btn-sm btn-outline-primary" onClick={() => setEditing(true)}>
+                Edit
+              </button>
+              {canDelete && (
+                <button className="btn btn-sm btn-outline-danger" onClick={() => setConfirmDelete(true)}>
+                  Delete
+                </button>
+              )}
+            </div>
           )}
         </div>
         <div className="card-body">
