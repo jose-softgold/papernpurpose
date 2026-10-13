@@ -35,6 +35,12 @@ const nowStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+const toLocalInput = (ts?: Timestamp | null) => {
+  const d = ts?.toDate?.() ?? new Date()
+  if (Number.isNaN(d.getTime())) return nowStr()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 const emptyItem = (gstRate = 0): LineItem => ({ materialId: '', quantity: '1', unitCost: 0, gstRate })
 
 type PurchaserOption = WorkerOption & { role: UserRole }
@@ -50,11 +56,13 @@ export default function PurchasePage() {
   const [purchasers, setPurchasers] = useState<PurchaserOption[]>([])
   const [supplierId, setSupplierId] = useState('')
   const [purchasedById, setPurchasedById] = useState('')
-  const [paymentStatus, setPaymentStatus] = useState<'paid' | 'unpaid'>('unpaid')
   const [purchaseDate, setPurchaseDate] = useState(nowStr())
   const [notes, setNotes] = useState('')
   const [items, setItems] = useState<LineItem[]>([emptyItem()])
   const [billPhotos, setBillPhotos] = useState<File[]>([])
+  const [existingBillUrls, setExistingBillUrls] = useState<string[]>([])
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [loadingEdit, setLoadingEdit] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [closing, setClosing] = useState<{
@@ -197,6 +205,48 @@ export default function PurchasePage() {
   const gstTotal = taxLines.reduce((s, l) => s + l.gstAmount, 0)
   const grandTotal = taxableSubtotal + gstTotal
   const canSubmit = supplierId && purchasedById && items.length > 0 && items.every(i => i.materialId && parseFloat(i.quantity) > 0)
+  const formRef = useRef<HTMLDivElement>(null)
+
+  const resetForm = () => {
+    setEditingId(null)
+    setSupplierId('')
+    setPurchasedById(user?.uid ?? '')
+    setPurchaseDate(nowStr())
+    setNotes('')
+    setItems([emptyItem()])
+    setBillPhotos([])
+    setExistingBillUrls([])
+    if (fileRef.current) fileRef.current.value = ''
+  }
+
+  const startEdit = async (p: Purchase) => {
+    setLoadingEdit(true)
+    try {
+      const lines = await purchaseService.getItems(p.id)
+      setEditingId(p.id)
+      setSupplierId(p.supplierId)
+      setPurchasedById(p.purchasedById || '')
+      setPurchaseDate(toLocalInput(p.purchaseDate))
+      setNotes(p.notes || '')
+      setExistingBillUrls(p.billPhotoUrls ?? [])
+      setBillPhotos([])
+      if (fileRef.current) fileRef.current.value = ''
+      setItems(lines.length
+        ? lines.map(line => ({
+            materialId: line.materialId,
+            quantity: String(line.quantity),
+            unitCost: Number(line.unitCost ?? 0),
+            gstRate: Number(line.gstRate ?? 0),
+          }))
+        : [emptyItem()])
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    } catch (err) {
+      showToast('Could not open this purchase', 'danger')
+      console.error(err)
+    } finally {
+      setLoadingEdit(false)
+    }
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -208,21 +258,21 @@ export default function PurchasePage() {
       const materialMap: Record<string, Material> = {}
       materials.forEach(m => { materialMap[m.id] = m })
 
-      const billPhotoUrls = billPhotos.length
+      const uploaded = billPhotos.length
         ? await Promise.all(billPhotos.map(async file => {
             const tmpId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-            const sRef = storageRef(storage, `purchases/pending/${tmpId}-${file.name}`)
+            const sRef = storageRef(storage, `purchases/${editingId ?? 'pending'}/${tmpId}-${file.name}`)
             await uploadBytes(sRef, file)
             return getDownloadURL(sRef)
           }))
         : []
+      const billPhotoUrls = [...existingBillUrls, ...uploaded]
 
       const buyer = purchaserOptions.find(u => u.id === purchasedById)
-      await purchaseService.complete({
+      const payload = {
         supplierId,
         purchasedById,
         purchasedByName: buyer?.name || userDoc?.name || '',
-        paymentStatus,
         purchaseDate: ts,
         notes,
         billPhotoUrls,
@@ -233,20 +283,18 @@ export default function PurchasePage() {
           unit: materialMap[i.materialId]?.unit ?? '',
           gstRate: i.gstRate,
         })),
-      })
-
-      showToast('Purchase completed successfully', 'success')
-      setSupplierId('')
-      setPurchasedById(user?.uid ?? '')
-      setPaymentStatus('unpaid')
-      setPurchaseDate(nowStr())
-      setNotes('')
-      setItems([emptyItem()])
-      setBillPhotos([])
-      if (fileRef.current) fileRef.current.value = ''
+      }
+      if (editingId) {
+        await purchaseService.update(editingId, payload)
+        showToast('Purchase updated', 'success')
+      } else {
+        await purchaseService.complete(payload)
+        showToast('Purchase completed successfully', 'success')
+      }
+      resetForm()
       if (!isWorker) loadHistory()
     } catch (err) {
-      showToast('Failed to complete purchase', 'danger')
+      showToast(editingId ? 'Failed to update purchase' : 'Failed to complete purchase', 'danger')
       console.error(err)
     } finally {
       setSubmitting(false)
@@ -372,9 +420,14 @@ export default function PurchasePage() {
         }
       />
 
-      <div className="card mb-4">
-        <div className="card-header">
-          <h5 className="mb-0">New Purchase</h5>
+      <div className="card mb-4" ref={formRef}>
+        <div className="card-header d-flex justify-content-between align-items-center">
+          <h5 className="mb-0">{editingId ? 'Edit Purchase' : 'New Purchase'}</h5>
+          {editingId && (
+            <button type="button" className="btn btn-sm btn-outline-secondary" onClick={resetForm} disabled={submitting}>
+              Cancel
+            </button>
+          )}
         </div>
         <div className="card-body">
           <form onSubmit={handleSubmit}>
@@ -404,17 +457,6 @@ export default function PurchasePage() {
                 />
               </div>
               <div className="col-md-6">
-                <label className="form-label">Payment status <span className="text-danger">*</span></label>
-                <select
-                  className="form-select"
-                  value={paymentStatus}
-                  onChange={e => setPaymentStatus(e.target.value === 'paid' ? 'paid' : 'unpaid')}
-                >
-                  <option value="unpaid">Not paid</option>
-                  <option value="paid">Paid</option>
-                </select>
-              </div>
-              <div className="col-md-6">
                 <label className="form-label">Purchase Date</label>
                 <input
                   type="datetime-local"
@@ -435,6 +477,22 @@ export default function PurchasePage() {
               </div>
               <div className="col-12">
                 <label className="form-label">Bill / Receipt Photos</label>
+                {existingBillUrls.length > 0 && (
+                  <div className="d-flex flex-wrap gap-2 mb-2">
+                    {existingBillUrls.map((url, i) => (
+                      <span key={url} className="badge text-bg-light border">
+                        Bill {i + 1}
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-link p-0 ms-1"
+                          onClick={() => setExistingBillUrls(prev => prev.filter(u => u !== url))}
+                        >
+                          Remove
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <input
                   ref={fileRef}
                   type="file"
@@ -519,8 +577,8 @@ export default function PurchasePage() {
             </div>
 
             <div className="pc-sticky-submit">
-              <button type="submit" className="btn btn-primary w-100 w-lg-auto" disabled={!canSubmit || submitting}>
-                {submitting ? 'Processing…' : 'Complete Purchase'}
+              <button type="submit" className="btn btn-primary w-100 w-lg-auto" disabled={!canSubmit || submitting || loadingEdit}>
+                {submitting ? 'Processing…' : editingId ? 'Save changes' : 'Complete Purchase'}
               </button>
             </div>
           </form>
@@ -579,10 +637,10 @@ export default function PurchasePage() {
                         <th>Date</th>
                         <th>Supplier</th>
                         <th>Paid by</th>
-                        <th>Payment status</th>
                         <th>Total (₹)</th>
                         <th>Materials</th>
                         <th>Total Qty</th>
+                        <th></th>
                         <th>Bills</th>
                         <th>Status</th>
                       </tr>
@@ -608,14 +666,21 @@ export default function PurchasePage() {
                           <td>{formatDate(p.purchaseDate)}</td>
                           <td>{supplierMap[p.supplierId]?.name ?? p.supplierId}</td>
                           <td>{p.purchasedByName || '—'}</td>
-                          <td>
-                            <span className={`badge ${settled ? 'text-bg-success' : 'text-bg-warning'}`}>
-                              {settled ? 'Paid' : 'Not paid'}
-                            </span>
-                          </td>
                           <td>{formatCurrency(total)}</td>
                           <td>{p.itemCount ?? '—'}</td>
                           <td>{p.totalQty ?? '—'}</td>
+                          <td>
+                            {canRecordCash && (
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-outline-primary"
+                                disabled={loadingEdit}
+                                onClick={() => void startEdit(p)}
+                              >
+                                Edit
+                              </button>
+                            )}
+                          </td>
                           <td>
                             {p.billPhotoUrls?.length ? (
                               <button

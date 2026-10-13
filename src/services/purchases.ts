@@ -1,4 +1,4 @@
-import { collection, doc, getDocs, query, orderBy, serverTimestamp, writeBatch, Timestamp } from 'firebase/firestore'
+import { collection, doc, getDocs, query, where, orderBy, serverTimestamp, writeBatch, Timestamp } from 'firebase/firestore'
 import { db, auth } from '../firebase/config'
 import { Purchase, PurchaseItem } from '../types'
 import { lineTax, roundMoney } from '../utils/tax'
@@ -108,6 +108,113 @@ export const purchaseService = {
   async listItems(): Promise<PurchaseItem[]> {
     const snap = await getDocs(collection(db, 'purchaseItems'))
     return snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseItem))
+  },
+
+  async getItems(purchaseId: string): Promise<PurchaseItem[]> {
+    const snap = await getDocs(
+      query(collection(db, 'purchaseItems'), where('purchaseId', '==', purchaseId)),
+    )
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseItem))
+  },
+
+  async update(id: string, params: {
+    supplierId: string
+    purchaseDate: Timestamp
+    notes: string
+    items: Array<{ materialId: string; quantity: number; unitCost: number; unit: string; gstRate?: number }>
+    billPhotoUrls?: string[]
+    purchasedById?: string
+    purchasedByName?: string
+  }): Promise<void> {
+    const existing = await this.getItems(id)
+    const batch = writeBatch(db)
+    const taxLines = params.items.map(i => lineTax(i.quantity, i.unitCost, i.gstRate ?? 0))
+    const taxableSubtotal = roundMoney(taxLines.reduce((s, l) => s + l.taxableAmount, 0))
+    const gstTotal = roundMoney(taxLines.reduce((s, l) => s + l.gstAmount, 0))
+    const grandTotal = roundMoney(taxableSubtotal + gstTotal)
+    const createdBy = auth.currentUser?.uid ?? ''
+
+    batch.update(doc(db, 'purchases', id), {
+      supplierId: params.supplierId,
+      purchaseDate: params.purchaseDate,
+      total: grandTotal,
+      taxableSubtotal,
+      gstTotal,
+      grandTotal,
+      itemCount: params.items.length,
+      totalQty: params.items.reduce((s, i) => s + i.quantity, 0),
+      notes: params.notes,
+      billPhotoUrls: params.billPhotoUrls ?? [],
+      purchasedById: params.purchasedById ?? '',
+      purchasedByName: params.purchasedByName ?? '',
+      updatedAt: serverTimestamp(),
+    })
+
+    for (const item of existing) {
+      batch.delete(doc(db, 'purchaseItems', item.id))
+    }
+    params.items.forEach((item, idx) => {
+      const tax = taxLines[idx]
+      batch.set(doc(collection(db, 'purchaseItems')), {
+        purchaseId: id,
+        materialId: item.materialId,
+        quantity: item.quantity,
+        unitCost: item.unitCost,
+        total: tax.lineTotal,
+        gstRate: item.gstRate ?? 0,
+        taxableAmount: tax.taxableAmount,
+        gstAmount: tax.gstAmount,
+      })
+    })
+
+    const oldQty = new Map<string, { quantity: number; unit: string }>()
+    for (const item of existing) {
+      const prev = oldQty.get(item.materialId)
+      oldQty.set(item.materialId, {
+        quantity: (prev?.quantity ?? 0) + item.quantity,
+        unit: prev?.unit ?? '',
+      })
+    }
+    const newQty = new Map<string, { quantity: number; unit: string }>()
+    for (const item of params.items) {
+      const prev = newQty.get(item.materialId)
+      newQty.set(item.materialId, {
+        quantity: (prev?.quantity ?? 0) + item.quantity,
+        unit: item.unit,
+      })
+    }
+    for (const materialId of new Set([...oldQty.keys(), ...newQty.keys()])) {
+      const before = oldQty.get(materialId)?.quantity ?? 0
+      const after = newQty.get(materialId)?.quantity ?? 0
+      const delta = after - before
+      if (delta === 0) continue
+      batch.set(doc(collection(db, 'inventoryTransactions')), {
+        itemType: 'material',
+        itemId: materialId,
+        transactionType: 'PURCHASE',
+        quantity: delta,
+        unit: newQty.get(materialId)?.unit || oldQty.get(materialId)?.unit || '',
+        referenceType: 'purchase',
+        referenceId: id,
+        notes: 'Purchase edited',
+        createdAt: serverTimestamp(),
+        createdBy,
+      })
+    }
+
+    await batch.commit()
+    await auditService.log({
+      action: 'purchase.update',
+      entityType: 'purchase',
+      entityId: id,
+      after: {
+        supplierId: params.supplierId,
+        grandTotal,
+        itemCount: params.items.length,
+        purchasedById: params.purchasedById ?? null,
+        purchasedByName: params.purchasedByName ?? null,
+      },
+    })
   },
 
   /** One cash payment that marks the selected open purchases as paid. */
