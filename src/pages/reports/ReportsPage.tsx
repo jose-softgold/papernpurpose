@@ -14,7 +14,9 @@ import {
   BankTxStatus,
   Customer,
   Order,
+  Material,
   Purchase,
+  PurchaseItem,
   Supplier,
   WorkerOption,
 } from '../../types'
@@ -29,13 +31,14 @@ import ToastContainer from '../../components/ToastContainer'
 import { useAuth } from '../../hooks/useAuth'
 import { isAdminOrOwner } from '../../utils/roles'
 import { orderService } from '../../services/orders'
-import { purchaseService } from '../../services/purchases'
+import { purchaseIsPaid, purchaseService } from '../../services/purchases'
+import { materialService } from '../../services/materials'
 import { customerService } from '../../services/customers'
 import { supplierService } from '../../services/suppliers'
 import { usersService } from '../../services/users'
 import { bankService } from '../../services/bank'
 
-type TabKey = 'sales' | 'profitability' | 'customers' | 'production' | 'bank'
+type TabKey = 'sales' | 'profitability' | 'customers' | 'production' | 'purchases' | 'bank'
 
 interface DateRange {
   from: string
@@ -639,7 +642,7 @@ function BankCashTab() {
       const p = purchases.find(x => x.id === tx.purchaseId)
       parts.push(
         p
-          ? `Purchase: ${supplierMap[p.supplierId] || 'Supplier'}`
+          ? `Purchase: ${supplierMap[p.supplierId] || 'Supplier'}${p.purchasedByName ? ` · ${p.purchasedByName}` : ''}`
           : `Purchase ${tx.purchaseId.slice(0, 6)}`,
       )
     }
@@ -860,6 +863,233 @@ function BankCashTab() {
   )
 }
 
+// ──────────────── Purchases Report ────────────────
+interface PurchaseReportLine {
+  id: string
+  dateMs: number
+  dateLabel: string
+  vendor: string
+  amountPaid: number
+  subtotal: number
+  rate: number
+  qty: number
+  item: string
+  paidBy: string
+  paymentStatus: 'Paid' | 'Not paid'
+}
+
+function PurchasesTab() {
+  const { toasts, showToast } = useToast()
+  const { range, setRange, toDates } = useDateRange(presetRange('this_month'))
+  const [lines, setLines] = useState<PurchaseReportLine[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [paidBy, setPaidBy] = useState('')
+  const [status, setStatus] = useState<'all' | 'paid' | 'unpaid'>('all')
+
+  const generate = async () => {
+    setLoading(true)
+    try {
+      const { from, to } = toDates()
+      const [purchases, items, suppliers, materials, bankRows] = await Promise.all([
+        purchaseService.getAll(),
+        purchaseService.listItems(),
+        supplierService.getAll(),
+        materialService.getAll(),
+        bankService.getAll({ max: 500 }).catch(() => [] as BankTransaction[]),
+      ])
+      const bankPaid: Record<string, number> = {}
+      for (const t of bankRows) {
+        const ids = t.purchaseIds?.length ? t.purchaseIds : (t.purchaseId ? [t.purchaseId] : [])
+        for (const id of ids) bankPaid[id] = (bankPaid[id] ?? 0) + Number(t.amount || 0)
+      }
+      const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s.name]))
+      const materialMap = Object.fromEntries(materials.map((m: Material) => [m.id, m.name]))
+      const itemsByPurchase = new Map<string, PurchaseItem[]>()
+      for (const item of items) {
+        const list = itemsByPurchase.get(item.purchaseId) ?? []
+        list.push(item)
+        itemsByPurchase.set(item.purchaseId, list)
+      }
+      const next: PurchaseReportLine[] = []
+      for (const p of purchases) {
+        const ms = p.purchaseDate?.toMillis?.() ?? 0
+        if (from && ms < from.getTime()) continue
+        if (to && ms > to.getTime()) continue
+        const settled = purchaseIsPaid(p, bankPaid[p.id] ?? 0)
+        const statusLabel: PurchaseReportLine['paymentStatus'] = settled ? 'Paid' : 'Not paid'
+        const base = {
+          dateMs: ms,
+          dateLabel: formatDate(p.purchaseDate),
+          vendor: supplierMap[p.supplierId] || p.supplierId,
+          paidBy: p.purchasedByName || '',
+          paymentStatus: statusLabel,
+        }
+        const purchaseItems = itemsByPurchase.get(p.id) ?? []
+        if (!purchaseItems.length) {
+          next.push({
+            ...base,
+            id: p.id,
+            amountPaid: Number(p.grandTotal ?? p.total ?? 0),
+            subtotal: Number(p.taxableSubtotal ?? p.total ?? 0),
+            rate: 0,
+            qty: Number(p.totalQty ?? 0),
+            item: '',
+          })
+          continue
+        }
+        for (const item of purchaseItems) {
+          next.push({
+            ...base,
+            id: item.id,
+            amountPaid: Number(item.total ?? 0),
+            subtotal: Number(item.taxableAmount ?? item.total ?? 0),
+            rate: Number(item.unitCost ?? 0),
+            qty: Number(item.quantity ?? 0),
+            item: materialMap[item.materialId] || item.materialId,
+          })
+        }
+      }
+      next.sort((a, b) => b.dateMs - a.dateMs)
+      setLines(next)
+      setPaidBy('')
+      setStatus('all')
+    } catch (err) {
+      console.error(err)
+      showToast('Failed to generate purchases report', 'danger')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const people = useMemo(
+    () => [...new Set((lines ?? []).map(l => l.paidBy).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [lines],
+  )
+
+  const filtered = useMemo(() => {
+    if (!lines) return []
+    return lines.filter(l => {
+      if (paidBy && l.paidBy !== paidBy) return false
+      if (status === 'paid' && l.paymentStatus !== 'Paid') return false
+      if (status === 'unpaid' && l.paymentStatus !== 'Not paid') return false
+      return true
+    })
+  }, [lines, paidBy, status])
+
+  const amount = filtered.reduce((s, l) => s + l.amountPaid, 0)
+  const openAmount = filtered.filter(l => l.paymentStatus === 'Not paid').reduce((s, l) => s + l.amountPaid, 0)
+
+  const exportData: Record<string, unknown>[] = filtered.map(l => ({
+    Date: l.dateLabel,
+    Vendor: l.vendor,
+    'Amount paid': l.amountPaid,
+    Subtotal: l.subtotal,
+    Rate: l.rate,
+    Qty: l.qty,
+    Item: l.item,
+    'Paid by': l.paidBy,
+    'Payment status': l.paymentStatus,
+  }))
+
+  return (
+    <>
+      <ToastContainer toasts={toasts} />
+      <DateFilter range={range} setRange={setRange} onGenerate={() => void generate()} loading={loading} presets />
+      {loading && <LoadingSpinner />}
+      {!loading && lines === null && (
+        <EmptyState message="Pick a date range, then generate the purchases report." />
+      )}
+      {!loading && lines && (
+        <>
+          <div className="row g-2 mb-3">
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Lines</div>
+                <div className="fw-semibold">{filtered.length}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Amount paid</div>
+                <div className="fw-semibold">{formatCurrency(amount)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Still open</div>
+                <div className="fw-semibold">{formatCurrency(openAmount)}</div>
+              </div>
+            </div>
+          </div>
+          <div className="row g-2 mb-3">
+            <div className="col-auto">
+              <label className="form-label mb-1 small">Paid by</label>
+              <select className="form-select form-select-sm" value={paidBy} onChange={e => setPaidBy(e.target.value)}>
+                <option value="">Everyone</option>
+                {people.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+            </div>
+            <div className="col-auto">
+              <label className="form-label mb-1 small">Payment status</label>
+              <select
+                className="form-select form-select-sm"
+                value={status}
+                onChange={e => setStatus(e.target.value === 'paid' || e.target.value === 'unpaid' ? e.target.value : 'all')}
+              >
+                <option value="all">All</option>
+                <option value="paid">Paid</option>
+                <option value="unpaid">Not paid</option>
+              </select>
+            </div>
+          </div>
+          <DataGrid
+            items={filtered}
+            empty={<EmptyState message="No purchases in this range." />}
+          >
+            {pageItems => (
+              <>
+                <thead className="table-light">
+                  <tr>
+                    <th>Date</th>
+                    <th>Vendor</th>
+                    <th>Amount paid</th>
+                    <th>Subtotal</th>
+                    <th>Rate</th>
+                    <th>Qty</th>
+                    <th>Item</th>
+                    <th>Paid by</th>
+                    <th>Payment status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pageItems.map(l => (
+                    <tr key={l.id}>
+                      <td>{l.dateLabel}</td>
+                      <td>{l.vendor}</td>
+                      <td>{formatCurrency(l.amountPaid)}</td>
+                      <td>{formatCurrency(l.subtotal)}</td>
+                      <td>{formatCurrency(l.rate)}</td>
+                      <td>{l.qty}</td>
+                      <td>{l.item || '—'}</td>
+                      <td>{l.paidBy || '—'}</td>
+                      <td>
+                        <span className={`badge ${l.paymentStatus === 'Paid' ? 'text-bg-success' : 'text-bg-warning'}`}>
+                          {l.paymentStatus}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </>
+            )}
+          </DataGrid>
+          <ExportButtons data={exportData} filename="purchases-report" show={filtered.length > 0} />
+        </>
+      )}
+    </>
+  )
+}
+
 // ──────────────── Main Page ────────────────
 export default function ReportsPage() {
   const { role } = useAuth()
@@ -872,6 +1102,7 @@ export default function ReportsPage() {
       : tabParam === 'profitability' ||
           tabParam === 'customers' ||
           tabParam === 'production' ||
+          tabParam === 'purchases' ||
           tabParam === 'sales'
         ? tabParam
         : 'sales'
@@ -882,6 +1113,7 @@ export default function ReportsPage() {
     { key: 'profitability', label: 'Product Profitability' },
     { key: 'customers', label: 'Customer Sales' },
     { key: 'production', label: 'Production Report' },
+    { key: 'purchases', label: 'Purchases' },
     ...(canBank ? [{ key: 'bank' as const, label: 'Bank / Cash' }] : []),
   ]
 
@@ -891,11 +1123,12 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (tabParam === 'bank' && canBank) setTab('bank')
+    if (tabParam === 'purchases') setTab('purchases')
   }, [tabParam, canBank])
 
   function selectTab(next: TabKey) {
     setTab(next)
-    if (next === 'bank') setSearchParams({ tab: 'bank' })
+    if (next === 'bank' || next === 'purchases') setSearchParams({ tab: next })
     else setSearchParams({})
   }
 
@@ -903,7 +1136,7 @@ export default function ReportsPage() {
     <div>
       <PageHeader
         title="Reports"
-        subtitle="Sales, profitability, production, and bank cash over any date range"
+        subtitle="Sales, profitability, production, purchases, and bank cash over any date range"
         icon="📈"
       />
       <ul className="nav nav-tabs mb-3">
@@ -923,6 +1156,7 @@ export default function ReportsPage() {
         {tab === 'profitability' && <ProfitabilityTab />}
         {tab === 'customers' && <CustomerSalesTab />}
         {tab === 'production' && <ProductionTab />}
+        {tab === 'purchases' && <PurchasesTab />}
         {tab === 'bank' && canBank && <BankCashTab />}
       </div>
     </div>

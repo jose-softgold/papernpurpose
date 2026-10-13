@@ -611,6 +611,9 @@ async function executeTool(
         status: 'COMPLETED',
         notes: String(args.notes ?? ''),
         billPhotoUrls,
+        purchasedById: actor.uid,
+        purchasedByName: actor.name,
+        paymentStatus: 'unpaid',
         createdAt: FieldValue.serverTimestamp(),
       })
       items.forEach((item, idx) => {

@@ -294,6 +294,12 @@ export interface Supplier {
 export interface Purchase {
   id: string
   supplierId: string
+  /** Platform user who paid the vendor. */
+  purchasedById?: string
+  purchasedByName?: string
+  /** Whether this purchase is still open, or closed (including by a cash settlement). */
+  paymentStatus?: 'paid' | 'unpaid'
+  settlementTransactionId?: string
   purchaseDate: Timestamp
   total: number
   itemCount?: number
@@ -419,6 +425,8 @@ export interface BankTransaction {
   workerId?: string | null
   orderId?: string | null
   purchaseId?: string | null
+  /** Set when one cash payment closes several purchases. */
+  purchaseIds?: string[]
   materialId?: string | null
   productId?: string | null
   /** Customer payment against an order */

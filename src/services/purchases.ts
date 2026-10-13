@@ -1,8 +1,16 @@
 import { collection, doc, getDocs, query, orderBy, serverTimestamp, writeBatch, Timestamp } from 'firebase/firestore'
 import { db, auth } from '../firebase/config'
-import { Purchase } from '../types'
+import { Purchase, PurchaseItem } from '../types'
 import { lineTax, roundMoney } from '../utils/tax'
+import { createHash } from '../utils/hash'
 import { auditService } from './audit'
+
+export function purchaseIsPaid(p: Purchase, bankPaid = 0): boolean {
+  if (p.paymentStatus === 'paid') return true
+  if (p.paymentStatus === 'unpaid') return false
+  const total = Number(p.grandTotal ?? p.total ?? 0)
+  return total > 0 && bankPaid + 0.009 >= total
+}
 
 export const purchaseService = {
   async getAll(): Promise<Purchase[]> {
@@ -17,6 +25,9 @@ export const purchaseService = {
     notes: string
     items: Array<{ materialId: string; quantity: number; unitCost: number; unit: string; gstRate?: number }>
     billPhotoUrls?: string[]
+    purchasedById?: string
+    purchasedByName?: string
+    paymentStatus?: 'paid' | 'unpaid'
   }): Promise<string> {
     const batch = writeBatch(db)
     const taxLines = params.items.map(i => lineTax(i.quantity, i.unitCost, i.gstRate ?? 0))
@@ -38,6 +49,13 @@ export const purchaseService = {
       status: 'COMPLETED',
       notes: params.notes,
       billPhotoUrls: params.billPhotoUrls ?? [],
+      ...(params.purchasedById
+        ? {
+            purchasedById: params.purchasedById,
+            purchasedByName: params.purchasedByName ?? '',
+          }
+        : {}),
+      paymentStatus: params.paymentStatus === 'paid' ? 'paid' : 'unpaid',
       createdAt: serverTimestamp(),
     })
 
@@ -75,8 +93,98 @@ export const purchaseService = {
       action: 'purchase.complete',
       entityType: 'purchase',
       entityId: purchaseRef.id,
-      after: { supplierId: params.supplierId, grandTotal, itemCount: params.items.length },
+      after: {
+        supplierId: params.supplierId,
+        grandTotal,
+        itemCount: params.items.length,
+        purchasedById: params.purchasedById ?? null,
+        purchasedByName: params.purchasedByName ?? null,
+        paymentStatus: params.paymentStatus === 'paid' ? 'paid' : 'unpaid',
+      },
     })
     return purchaseRef.id
+  },
+
+  async listItems(): Promise<PurchaseItem[]> {
+    const snap = await getDocs(collection(db, 'purchaseItems'))
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseItem))
+  },
+
+  /** One cash payment that marks the selected open purchases as paid. */
+  async settleWithCash(params: {
+    purchaseIds: string[]
+    amount: number
+    occurredAt: Date
+    notes?: string
+    label?: string
+  }): Promise<string> {
+    const ids = [...new Set(params.purchaseIds.map(id => id.trim()).filter(Boolean))]
+    if (!ids.length) throw new Error('Select at least one purchase')
+    const amount = Math.abs(Number(params.amount))
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0')
+    const occurredAt = params.occurredAt instanceof Date ? params.occurredAt : new Date(params.occurredAt)
+    if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid payment date')
+
+    const fingerprint = createHash(
+      ['cash-close', ids.join(','), amount.toFixed(2), occurredAt.toISOString(), String(Date.now())].join('|'),
+    )
+    const label = params.label?.trim() || `${ids.length} purchase${ids.length === 1 ? '' : 's'}`
+    const notes = params.notes?.trim() || ''
+    const batch = writeBatch(db)
+    const bankRef = doc(collection(db, 'bankTransactions'))
+
+    batch.set(bankRef, {
+      gmailMessageId: `manual:${fingerprint}`,
+      gmailThreadId: '',
+      fingerprint,
+      source: 'manual',
+      occurredAt: Timestamp.fromDate(occurredAt),
+      amount,
+      direction: 'debit',
+      currency: 'INR',
+      bankName: null,
+      accountLast4: null,
+      counterparty: label,
+      description: `Cash close · ${label}`,
+      rawSubject: notes,
+      snippet: '',
+      parseConfidence: 1,
+      parseNotes: 'Cash settlement closing purchases',
+      status: 'matched',
+      books: 'business',
+      personalCategory: null,
+      category: 'materials',
+      workerId: null,
+      orderId: null,
+      purchaseId: ids.length === 1 ? ids[0] : null,
+      purchaseIds: ids,
+      materialId: null,
+      productId: null,
+      paymentKind: null,
+      expenseKind: null,
+      workerPayKind: null,
+      tags: [],
+      matchType: 'purchase',
+      matchId: ids[0],
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      reviewedBy: auth.currentUser?.uid ?? '',
+    })
+
+    for (const id of ids) {
+      batch.update(doc(db, 'purchases', id), {
+        paymentStatus: 'paid',
+        settlementTransactionId: bankRef.id,
+      })
+    }
+
+    await batch.commit()
+    await auditService.log({
+      action: 'purchase.settle_cash',
+      entityType: 'purchase',
+      entityId: bankRef.id,
+      after: { purchaseIds: ids, amount, label },
+    })
+    return bankRef.id
   },
 }

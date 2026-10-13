@@ -623,6 +623,68 @@ export const bankService = {
     return ref.id
   },
 
+  /** Cash paid for a purchase, when it never arrived as a bank alert. */
+  async createManualPurchasePayment(params: {
+    purchaseId: string
+    amount: number
+    occurredAt: Date
+    notes?: string
+    supplierName?: string
+  }): Promise<string> {
+    const purchaseId = params.purchaseId.trim()
+    if (!purchaseId) throw new Error('Purchase is required')
+    const amount = Math.abs(Number(params.amount))
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0')
+    const occurredAt = params.occurredAt instanceof Date ? params.occurredAt : new Date(params.occurredAt)
+    if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid payment date')
+
+    const fingerprint = createHash(
+      ['manual-purchase', purchaseId, amount.toFixed(2), occurredAt.toISOString(), String(Date.now())].join('|'),
+    )
+    const who = params.supplierName?.trim() || purchaseId.slice(0, 6).toUpperCase()
+    const notes = params.notes?.trim() || ''
+
+    const ref = await addDoc(collection(db, 'bankTransactions'), {
+      gmailMessageId: `manual:${fingerprint}`,
+      gmailThreadId: '',
+      fingerprint,
+      source: 'manual' as BankSource,
+      occurredAt: Timestamp.fromDate(occurredAt),
+      amount,
+      direction: 'debit' as BankDirection,
+      currency: 'INR',
+      bankName: null,
+      accountLast4: null,
+      counterparty: who,
+      description: `Cash · ${who}`,
+      rawSubject: notes,
+      snippet: '',
+      parseConfidence: 1,
+      parseNotes: 'Cash payment from purchase',
+      status: 'matched',
+      books: 'business',
+      personalCategory: null,
+      category: 'materials',
+      workerId: null,
+      orderId: null,
+      purchaseId,
+      materialId: null,
+      productId: null,
+      paymentKind: null,
+      expenseKind: null,
+      workerPayKind: null,
+      tags: [],
+      matchType: 'purchase' as BankMatchType,
+      matchId: purchaseId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      reviewedBy: actorId(),
+    })
+
+    await this.rememberCategory('materials')
+    return ref.id
+  },
+
   async getKnownTags(): Promise<string[]> {
     const snap = await getDoc(doc(db, 'meta', 'bankTags'))
     const stored = snap.exists() ? ((snap.data()?.names as string[]) ?? []) : []
@@ -687,7 +749,7 @@ export const bankService = {
     if (tx.expenseKind === 'logistics') return 'logistics'
     if (tx.expenseKind === 'recce') return 'recce'
     if (tx.workerPayKind || tx.workerId) return 'worker'
-    if (tx.purchaseId || tx.matchType === 'purchase') return 'purchase'
+    if (tx.purchaseId || tx.matchType === 'purchase' || (tx.purchaseIds && tx.purchaseIds.length > 0)) return 'purchase'
     return 'other'
   },
 
