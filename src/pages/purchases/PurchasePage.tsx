@@ -3,11 +3,10 @@ import { Timestamp } from 'firebase/firestore'
 import { Link } from 'react-router-dom'
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
-import { purchaseIsPaid, purchaseService } from '../../services/purchases'
+import { purchaseService } from '../../services/purchases'
 import { usersService } from '../../services/users'
 import { supplierService } from '../../services/suppliers'
 import { materialService } from '../../services/materials'
-import { bankService } from '../../services/bank'
 import { formatCurrency, formatDate } from '../../utils/format'
 import { lineTax } from '../../utils/tax'
 import { useToast } from '../../hooks/useToast'
@@ -19,7 +18,7 @@ import ToastContainer from '../../components/ToastContainer'
 import QuickSelect from '../../components/QuickSelect'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import { GstRateSelect } from '../../components/GstFields'
-import type { Purchase, Supplier, Material, BankTransaction, UserRole, WorkerOption } from '../../types'
+import type { Purchase, Supplier, Material, UserRole, WorkerOption } from '../../types'
 import { useAuth } from '../../hooks/useAuth'
 import { isAdminOrOwner, isWorker as roleIsWorker, ROLE_LABELS } from '../../utils/roles'
 
@@ -64,15 +63,6 @@ export default function PurchasePage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [loadingEdit, setLoadingEdit] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [selectedIds, setSelectedIds] = useState<string[]>([])
-  const [closing, setClosing] = useState<{
-    ids: string[]
-    amount: string
-    occurredAt: string
-    notes: string
-    label: string
-  } | null>(null)
-  const [savingCash, setSavingCash] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   const [quick, setQuick] = useState<'supplier' | 'material' | null>(null)
   const [materialTarget, setMaterialTarget] = useState(0)
@@ -84,7 +74,6 @@ export default function PurchasePage() {
   const [history, setHistory] = useState<Purchase[]>([])
   const [historyLoading, setHistoryLoading] = useState(!isWorker)
   const [supplierMap, setSupplierMap] = useState<Record<string, Supplier>>({})
-  const [bankByPurchase, setBankByPurchase] = useState<Record<string, BankTransaction[]>>({})
 
   useEffect(() => {
     setItems([emptyItem()])
@@ -113,17 +102,7 @@ export default function PurchasePage() {
     setHistoryLoading(true)
     purchaseService
       .getAll()
-      .then(async rows => {
-        setHistory(rows)
-        const bankRows = await bankService.getAll({ max: 500 }).catch(() => [] as BankTransaction[])
-        const map: Record<string, BankTransaction[]> = {}
-        for (const t of bankRows) {
-          if (!t.purchaseId) continue
-          if (!map[t.purchaseId]) map[t.purchaseId] = []
-          map[t.purchaseId].push(t)
-        }
-        setBankByPurchase(map)
-      })
+      .then(setHistory)
       .finally(() => setHistoryLoading(false))
   }, [isWorker])
 
@@ -301,64 +280,6 @@ export default function PurchasePage() {
     }
   }
 
-  const bankPaidOf = (p: Purchase) =>
-    (bankByPurchase[p.id] || []).reduce((s, t) => s + t.amount, 0)
-
-  const toggleSelected = (id: string) => {
-    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id])
-  }
-
-  const openClose = () => {
-    const chosen = history.filter(p => selectedIds.includes(p.id) && !purchaseIsPaid(p, bankPaidOf(p)))
-    if (!chosen.length) {
-      showToast('Select purchases that are still not paid', 'danger')
-      return
-    }
-    const sum = chosen.reduce((s, p) => s + Number(p.grandTotal ?? p.total ?? 0), 0)
-    const people = [...new Set(chosen.map(p => p.purchasedByName).filter(Boolean))]
-    setClosing({
-      ids: chosen.map(p => p.id),
-      amount: String(Math.round(sum * 100) / 100),
-      occurredAt: nowStr(),
-      notes: '',
-      label: people.join(', ') || `${chosen.length} purchase${chosen.length === 1 ? '' : 's'}`,
-    })
-  }
-
-  const handleClose = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!closing || savingCash) return
-    const amount = parseFloat(closing.amount)
-    if (!Number.isFinite(amount) || amount <= 0) {
-      showToast('Enter an amount greater than 0', 'danger')
-      return
-    }
-    const occurredAt = new Date(closing.occurredAt)
-    if (Number.isNaN(occurredAt.getTime())) {
-      showToast('Enter a valid date', 'danger')
-      return
-    }
-    setSavingCash(true)
-    try {
-      await purchaseService.settleWithCash({
-        purchaseIds: closing.ids,
-        amount,
-        occurredAt,
-        notes: closing.notes.trim() || undefined,
-        label: closing.label,
-      })
-      setClosing(null)
-      setSelectedIds([])
-      showToast('Cash payment recorded and purchases closed', 'success')
-      loadHistory()
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Failed to close purchases', 'danger')
-      console.error(err)
-    } finally {
-      setSavingCash(false)
-    }
-  }
-
   const lineEditor = (item: LineItem, idx: number) => (
     <>
       <QuickSelect
@@ -408,7 +329,7 @@ export default function PurchasePage() {
 
       <PageHeader
         title="Purchases"
-        subtitle="Record what was bought and who paid. Close open purchases later with one cash payment."
+        subtitle="Record what was bought and who paid."
         icon="🛒"
         actions={
           !isWorker ? (
@@ -605,13 +526,8 @@ export default function PurchasePage() {
 
       {!isWorker && (
         <div className="card">
-          <div className="card-header d-flex justify-content-between align-items-center gap-2">
+          <div className="card-header">
             <h5 className="mb-0">Purchase History</h5>
-            {canRecordCash && selectedIds.length > 0 && (
-              <button type="button" className="btn btn-sm btn-primary" onClick={openClose}>
-                Close {selectedIds.length} with cash
-              </button>
-            )}
           </div>
           <div className="card-body p-0">
             {historyLoading ? (
@@ -633,7 +549,6 @@ export default function PurchasePage() {
                   <>
                     <thead className="table-light">
                       <tr>
-                        {canRecordCash && <th style={{ width: 36 }}></th>}
                         <th>Date</th>
                         <th>Supplier</th>
                         <th>Paid by</th>
@@ -648,21 +563,8 @@ export default function PurchasePage() {
                     <tbody>
                       {pageItems.map(p => {
                         const total = Number(p.grandTotal ?? p.total ?? 0)
-                        const settled = purchaseIsPaid(p, bankPaidOf(p))
                         return (
                         <tr key={p.id}>
-                          {canRecordCash && (
-                            <td>
-                              <input
-                                type="checkbox"
-                                className="form-check-input"
-                                checked={selectedIds.includes(p.id)}
-                                disabled={settled || p.status !== 'COMPLETED'}
-                                onChange={() => toggleSelected(p.id)}
-                                aria-label={`Select purchase from ${supplierMap[p.supplierId]?.name ?? 'supplier'}`}
-                              />
-                            </td>
-                          )}
                           <td>{formatDate(p.purchaseDate)}</td>
                           <td>{supplierMap[p.supplierId]?.name ?? p.supplierId}</td>
                           <td>{p.purchasedByName || '—'}</td>
@@ -709,70 +611,6 @@ export default function PurchasePage() {
             )}
           </div>
         </div>
-      )}
-
-      {closing && (
-        <>
-          <div className="modal-backdrop fade show" onClick={() => !savingCash && setClosing(null)} />
-          <div className="modal d-block" tabIndex={-1} onClick={() => !savingCash && setClosing(null)}>
-            <div className="modal-dialog modal-dialog-centered" onClick={e => e.stopPropagation()}>
-              <form className="modal-content" onSubmit={e => void handleClose(e)}>
-                <div className="modal-header">
-                  <h5 className="modal-title">Close {closing.ids.length} purchase{closing.ids.length === 1 ? '' : 's'} with cash</h5>
-                  <button type="button" className="btn-close" disabled={savingCash} onClick={() => setClosing(null)} />
-                </div>
-                <div className="modal-body">
-                  <p className="small text-muted mb-3">
-                    This records the cash you handed over to settle {closing.label}. Those purchases are marked paid.
-                  </p>
-                  <div className="mb-2">
-                    <label className="form-label">Amount (₹)</label>
-                    <input
-                      type="number"
-                      className="form-control"
-                      min={0}
-                      step="0.01"
-                      value={closing.amount}
-                      disabled={savingCash}
-                      onChange={e => setClosing(prev => prev ? { ...prev, amount: e.target.value } : prev)}
-                      required
-                    />
-                  </div>
-                  <div className="mb-2">
-                    <label className="form-label">Paid on</label>
-                    <input
-                      type="datetime-local"
-                      className="form-control"
-                      value={closing.occurredAt}
-                      disabled={savingCash}
-                      onChange={e => setClosing(prev => prev ? { ...prev, occurredAt: e.target.value } : prev)}
-                      required
-                    />
-                  </div>
-                  <div>
-                    <label className="form-label">Note</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      value={closing.notes}
-                      disabled={savingCash}
-                      placeholder="Optional"
-                      onChange={e => setClosing(prev => prev ? { ...prev, notes: e.target.value } : prev)}
-                    />
-                  </div>
-                </div>
-                <div className="modal-footer">
-                  <button type="button" className="btn btn-outline-secondary" disabled={savingCash} onClick={() => setClosing(null)}>
-                    Cancel
-                  </button>
-                  <button type="submit" className="btn btn-primary" disabled={savingCash}>
-                    {savingCash ? 'Saving…' : 'Record cash and close'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        </>
       )}
 
       {viewingBills && (
