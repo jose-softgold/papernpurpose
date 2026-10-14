@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   reportService,
@@ -37,8 +37,11 @@ import { customerService } from '../../services/customers'
 import { supplierService } from '../../services/suppliers'
 import { usersService } from '../../services/users'
 import { bankService } from '../../services/bank'
+import { occasionService } from '../../services/occasions'
+import { productionService } from '../../services/production'
+import { productService } from '../../services/products'
 
-type TabKey = 'sales' | 'profitability' | 'customers' | 'production' | 'purchases' | 'bank'
+type TabKey = 'sales' | 'profitability' | 'customers' | 'production' | 'purchases' | 'occasions' | 'bank'
 
 interface DateRange {
   from: string
@@ -1103,6 +1106,325 @@ function PurchasesTab() {
   )
 }
 
+// ──────────────── Occasions ────────────────
+const UNASSIGNED_SEASON = '__unassigned__'
+const NON_SALE_STATUSES: Order['status'][] = ['DRAFT', 'QUOTED', 'CANCELLED']
+
+interface OccasionTop {
+  name: string
+  qty: number
+  amount: number
+}
+
+interface OccasionRow {
+  key: string
+  name: string
+  year: number | null
+  status: string
+  bills: number
+  purchases: number
+  productionQty: number
+  productionCost: number
+  unitsSold: number
+  revenue: number
+  cogs: number
+  profit: number
+  topMaterials: OccasionTop[]
+  topProducts: OccasionTop[]
+}
+
+function topOf(map: Map<string, OccasionTop>, limit = 5): OccasionTop[] {
+  return [...map.values()].sort((a, b) => b.amount - a.amount).slice(0, limit)
+}
+
+function OccasionsTab() {
+  const { toasts, showToast } = useToast()
+  const { role } = useAuth()
+  const canSeeSpend = isAdminOrOwner(role)
+  const [rows, setRows] = useState<OccasionRow[] | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [year, setYear] = useState('')
+  const [expanded, setExpanded] = useState<string | null>(null)
+
+  const generate = async () => {
+    setLoading(true)
+    try {
+      const [seasons, purchases, purchaseItems, productions, orders, products, materials] = await Promise.all([
+        occasionService.getAllSeasons(),
+        canSeeSpend ? purchaseService.getAll() : Promise.resolve([] as Purchase[]),
+        canSeeSpend ? purchaseService.listItems() : Promise.resolve([] as PurchaseItem[]),
+        productionService.getAll(),
+        orderService.getAll(),
+        productService.getAll(),
+        materialService.getAll(),
+      ])
+      const saleOrders = orders.filter(o => !NON_SALE_STATUSES.includes(o.status))
+      const orderItems = await orderService.getItemsForOrders(saleOrders.map(o => o.id))
+      const productName = Object.fromEntries(products.map(p => [p.id, p.name]))
+      const materialName = Object.fromEntries(materials.map((m: Material) => [m.id, m.name]))
+      const seasonIds = new Set(seasons.map(s => s.id))
+
+      const acc = new Map<string, OccasionRow & { mats: Map<string, OccasionTop>; prods: Map<string, OccasionTop> }>()
+      const rowFor = (seasonId: string | null | undefined) => {
+        const key = seasonId && seasonIds.has(seasonId) ? seasonId : UNASSIGNED_SEASON
+        let row = acc.get(key)
+        if (!row) {
+          const s = seasons.find(x => x.id === key)
+          row = {
+            key,
+            name: s?.name ?? 'Unassigned',
+            year: s?.year ?? null,
+            status: s?.status ?? '',
+            bills: 0, purchases: 0, productionQty: 0, productionCost: 0,
+            unitsSold: 0, revenue: 0, cogs: 0, profit: 0,
+            topMaterials: [], topProducts: [],
+            mats: new Map(), prods: new Map(),
+          }
+          acc.set(key, row)
+        }
+        return row
+      }
+      seasons.forEach(s => rowFor(s.id))
+
+      const purchaseSeason = new Map(purchases.map(p => [p.id, p.occasionSeasonId ?? null]))
+      for (const p of purchases) {
+        const row = rowFor(p.occasionSeasonId)
+        row.bills += 1
+        row.purchases += Number(p.grandTotal ?? p.total ?? 0)
+      }
+      for (const item of purchaseItems) {
+        if (item.kind === 'charge' || !item.materialId || !purchaseSeason.has(item.purchaseId)) continue
+        const row = rowFor(purchaseSeason.get(item.purchaseId))
+        const name = materialName[item.materialId] || item.materialId
+        const top = row.mats.get(item.materialId) ?? { name, qty: 0, amount: 0 }
+        top.qty += Number(item.quantity || 0)
+        top.amount += Number(item.total || 0)
+        row.mats.set(item.materialId, top)
+      }
+
+      for (const p of productions) {
+        if (p.status !== 'COMPLETED') continue
+        const row = rowFor(p.occasionSeasonId)
+        row.productionQty += Number(p.actualQuantity ?? p.quantity ?? 0)
+        row.productionCost += Number(p.totalMaterialCost || 0)
+      }
+
+      const seasonByOccasionYear = (occasionId: string | null | undefined, y: number) =>
+        occasionId ? seasons.find(s => s.occasionId === occasionId && s.year === y)?.id ?? null : null
+      for (const o of saleOrders) {
+        const when = (o.eventDate ?? o.orderDate)?.toDate?.() ?? new Date()
+        const fallback = seasonByOccasionYear(o.occasionId, when.getFullYear())
+        for (const item of orderItems[o.id] ?? []) {
+          const row = rowFor(item.occasionSeasonId || fallback)
+          const revenue = Number(item.taxableAmount ?? item.totalPrice ?? 0)
+          row.unitsSold += Number(item.quantity || 0)
+          row.revenue += revenue
+          row.cogs += Number(item.totalCost || 0)
+          row.profit += Number(item.profit ?? revenue - Number(item.totalCost || 0))
+          const name = productName[item.productId] || item.productId
+          const top = row.prods.get(item.productId) ?? { name, qty: 0, amount: 0 }
+          top.qty += Number(item.quantity || 0)
+          top.amount += revenue
+          row.prods.set(item.productId, top)
+        }
+      }
+
+      const statusRank: Record<string, number> = { active: 0, upcoming: 1, closed: 2 }
+      const next = [...acc.values()]
+        .map(({ mats, prods, ...row }) => ({ ...row, topMaterials: topOf(mats), topProducts: topOf(prods) }))
+        .filter(r => r.key !== UNASSIGNED_SEASON || r.bills || r.productionQty || r.unitsSold)
+        .sort((a, b) => {
+          if (a.key === UNASSIGNED_SEASON) return 1
+          if (b.key === UNASSIGNED_SEASON) return -1
+          return (b.year ?? 0) - (a.year ?? 0) || (statusRank[a.status] ?? 3) - (statusRank[b.status] ?? 3) || a.name.localeCompare(b.name)
+        })
+      setRows(next)
+      setExpanded(null)
+    } catch (err) {
+      console.error(err)
+      showToast('Failed to generate occasions report', 'danger')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { void generate() }, [])
+
+  const years = useMemo(
+    () => [...new Set((rows ?? []).map(r => r.year).filter((y): y is number => y !== null))].sort((a, b) => b - a),
+    [rows],
+  )
+  const filtered = useMemo(
+    () => (rows ?? []).filter(r => !year || r.year === Number(year)),
+    [rows, year],
+  )
+  const totals = filtered.reduce(
+    (t, r) => ({ purchases: t.purchases + r.purchases, revenue: t.revenue + r.revenue, profit: t.profit + r.profit }),
+    { purchases: 0, revenue: 0, profit: 0 },
+  )
+  const margin = (r: { revenue: number; profit: number }) => (r.revenue > 0 ? (r.profit / r.revenue) * 100 : 0)
+
+  const exportData: Record<string, unknown>[] = filtered.map(r => ({
+    Occasion: r.name,
+    Year: r.year ?? '',
+    Status: r.status,
+    ...(canSeeSpend ? { Bills: r.bills, 'Purchases (₹)': r.purchases } : {}),
+    'Produced qty': r.productionQty,
+    'Production cost (₹)': r.productionCost,
+    'Units sold': r.unitsSold,
+    'Revenue ex GST (₹)': r.revenue,
+    'Cost of goods (₹)': r.cogs,
+    'Gross profit (₹)': r.profit,
+    'Margin %': Number(margin(r).toFixed(1)),
+    ...(canSeeSpend ? { 'Net after purchases (₹)': r.revenue - r.purchases } : {}),
+  }))
+
+  const colCount = canSeeSpend ? 10 : 8
+
+  return (
+    <>
+      <ToastContainer toasts={toasts} />
+      <div className="row g-2 align-items-end mb-3">
+        <div className="col-auto">
+          <label className="form-label mb-1 small">Year</label>
+          <select className="form-select form-select-sm" value={year} onChange={e => setYear(e.target.value)}>
+            <option value="">All years</option>
+            {years.map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+        <div className="col-auto">
+          <button className="btn btn-sm btn-primary" onClick={() => void generate()} disabled={loading}>
+            {loading ? 'Loading…' : 'Refresh'}
+          </button>
+        </div>
+      </div>
+      {loading && <LoadingSpinner />}
+      {!loading && rows && (
+        <>
+          <div className="row g-2 mb-3">
+            {canSeeSpend && (
+              <div className="col-6 col-md-3">
+                <div className="border rounded p-2 h-100">
+                  <div className="small text-muted">Purchases</div>
+                  <div className="fw-semibold">{formatCurrency(totals.purchases)}</div>
+                </div>
+              </div>
+            )}
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Revenue (ex GST)</div>
+                <div className="fw-semibold">{formatCurrency(totals.revenue)}</div>
+              </div>
+            </div>
+            <div className="col-6 col-md-3">
+              <div className="border rounded p-2 h-100">
+                <div className="small text-muted">Gross profit</div>
+                <div className="fw-semibold">{formatCurrency(totals.profit)} · {formatPercent(margin(totals))}</div>
+              </div>
+            </div>
+          </div>
+          {filtered.length === 0 ? (
+            <EmptyState message="No occasion seasons yet. Open a season in Settings → Occasions." />
+          ) : (
+            <div className="table-responsive">
+              <table className="table table-sm table-hover align-middle mb-0">
+                <thead className="table-light">
+                  <tr>
+                    <th>Occasion</th>
+                    {canSeeSpend && <th className="text-end">Purchases</th>}
+                    <th className="text-end">Produced</th>
+                    <th className="text-end">Production cost</th>
+                    <th className="text-end">Units sold</th>
+                    <th className="text-end">Revenue</th>
+                    <th className="text-end">Gross profit</th>
+                    <th className="text-end">Margin</th>
+                    {canSeeSpend && <th className="text-end">Net after purchases</th>}
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map(r => {
+                    const open = expanded === r.key
+                    return (
+                      <Fragment key={r.key}>
+                        <tr role="button" onClick={() => setExpanded(open ? null : r.key)}>
+                          <td>
+                            <div className="fw-semibold">{r.name}</div>
+                            {r.status && <span className={`badge ${r.status === 'active' ? 'text-bg-success' : 'text-bg-secondary'}`}>{r.status}</span>}
+                          </td>
+                          {canSeeSpend && (
+                            <td className="text-end">
+                              {formatCurrency(r.purchases)}
+                              <div className="small text-muted">{r.bills} bill{r.bills === 1 ? '' : 's'}</div>
+                            </td>
+                          )}
+                          <td className="text-end">{r.productionQty}</td>
+                          <td className="text-end">{formatCurrency(r.productionCost)}</td>
+                          <td className="text-end">{r.unitsSold}</td>
+                          <td className="text-end">{formatCurrency(r.revenue)}</td>
+                          <td className={`text-end ${r.profit < 0 ? 'text-danger' : ''}`}>{formatCurrency(r.profit)}</td>
+                          <td className="text-end">{r.revenue > 0 ? formatPercent(margin(r)) : '—'}</td>
+                          {canSeeSpend && (
+                            <td className={`text-end ${r.revenue - r.purchases < 0 ? 'text-danger' : ''}`}>
+                              {formatCurrency(r.revenue - r.purchases)}
+                            </td>
+                          )}
+                          <td className="text-muted small">{open ? '▲' : '▼'}</td>
+                        </tr>
+                        {open && (
+                          <tr className="table-light">
+                            <td colSpan={colCount}>
+                              <div className="row g-3 py-1">
+                                {canSeeSpend && (
+                                  <div className="col-md-6">
+                                    <div className="small fw-semibold mb-1">Top materials bought</div>
+                                    {r.topMaterials.length === 0 ? (
+                                      <div className="small text-muted">No purchases tagged to this occasion.</div>
+                                    ) : (
+                                      <ul className="list-unstyled small mb-0">
+                                        {r.topMaterials.map(m => (
+                                          <li key={m.name} className="d-flex justify-content-between">
+                                            <span>{m.name} × {m.qty}</span>
+                                            <span>{formatCurrency(m.amount)}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                )}
+                                <div className="col-md-6">
+                                  <div className="small fw-semibold mb-1">Top products sold</div>
+                                  {r.topProducts.length === 0 ? (
+                                    <div className="small text-muted">No sales for this occasion yet.</div>
+                                  ) : (
+                                    <ul className="list-unstyled small mb-0">
+                                      {r.topProducts.map(p => (
+                                        <li key={p.name} className="d-flex justify-content-between">
+                                          <span>{p.name} × {p.qty}</span>
+                                          <span>{formatCurrency(p.amount)}</span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <ExportButtons data={exportData} filename="occasions-report" show={filtered.length > 0} />
+        </>
+      )}
+    </>
+  )
+}
+
 // ──────────────── Main Page ────────────────
 export default function ReportsPage() {
   const { role } = useAuth()
@@ -1116,6 +1438,7 @@ export default function ReportsPage() {
           tabParam === 'customers' ||
           tabParam === 'production' ||
           tabParam === 'purchases' ||
+          tabParam === 'occasions' ||
           tabParam === 'sales'
         ? tabParam
         : 'sales'
@@ -1127,6 +1450,7 @@ export default function ReportsPage() {
     { key: 'customers', label: 'Customer Sales' },
     { key: 'production', label: 'Production Report' },
     { key: 'purchases', label: 'Purchases' },
+    { key: 'occasions', label: 'Occasions' },
     ...(canBank ? [{ key: 'bank' as const, label: 'Bank / Cash' }] : []),
   ]
 
@@ -1136,12 +1460,12 @@ export default function ReportsPage() {
 
   useEffect(() => {
     if (tabParam === 'bank' && canBank) setTab('bank')
-    if (tabParam === 'purchases') setTab('purchases')
+    if (tabParam === 'purchases' || tabParam === 'occasions') setTab(tabParam)
   }, [tabParam, canBank])
 
   function selectTab(next: TabKey) {
     setTab(next)
-    if (next === 'bank' || next === 'purchases') setSearchParams({ tab: next })
+    if (next === 'bank' || next === 'purchases' || next === 'occasions') setSearchParams({ tab: next })
     else setSearchParams({})
   }
 
@@ -1170,6 +1494,7 @@ export default function ReportsPage() {
         {tab === 'customers' && <CustomerSalesTab />}
         {tab === 'production' && <ProductionTab />}
         {tab === 'purchases' && <PurchasesTab />}
+        {tab === 'occasions' && <OccasionsTab />}
         {tab === 'bank' && canBank && <BankCashTab />}
       </div>
     </div>

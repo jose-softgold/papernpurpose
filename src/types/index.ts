@@ -313,6 +313,8 @@ export interface Purchase {
   notes: string
   createdAt: Timestamp
   billPhotoUrls?: string[]
+  /** Occasion season the bill was bought for; null = general stock */
+  occasionSeasonId?: string | null
   /** Sum of charge lines (delivery, labour…) including GST; part of grandTotal. */
   chargesTotal?: number
   /** Legacy delivery block; new purchases record delivery as a 'charge' line instead. */
@@ -348,6 +350,7 @@ export interface PurchaseItem {
   gstRate?: number
   taxableAmount?: number
   gstAmount?: number
+  occasionSeasonId?: string | null
 }
 
 export interface AuditLog {

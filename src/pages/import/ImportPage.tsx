@@ -11,7 +11,7 @@ import { orderService } from '../../services/orders'
 import { purchaseService, type PurchaseLine } from '../../services/purchases'
 import { bomService } from '../../services/bom'
 import { productionService } from '../../services/production'
-import { occasionService } from '../../services/occasions'
+import { occasionService, slugifyOccasion } from '../../services/occasions'
 import { auditService } from '../../services/audit'
 import { bankService } from '../../services/bank'
 import { usersService } from '../../services/users'
@@ -106,6 +106,7 @@ const TEMPLATES: Record<ImportKind, Record<string, unknown>> = {
     'gst rate': 12,
     delivery: 150,
     'delivery mode': 'Porter',
+    occasion: 'Diwali 2026',
     notes: 'Missed bill from August',
   },
   orders: {
@@ -152,7 +153,7 @@ const HINTS: Record<ImportKind, string> = {
   suppliers: 'Columns: name, type, phone, email, city, address, gstin, company name, contact person, notes.',
   materials: 'Columns: name, category, unit, color/spec, minimum stock, cost per unit, gst rate, hsn, supplier, notes/description. Missing suppliers are created.',
   products: 'Columns: name, category, description, selling price, gst rate, hsn, version, notes. A version is created if missing (default V1).',
-  purchases: 'Columns: supplier, purchase date, material, qty, unit cost, gst rate, notes, and optional delivery + delivery mode. Rows with the same supplier + date become one purchase; put the delivery amount on one row of that bill and it becomes a charge line (no stock). Missing suppliers/materials are created.',
+  purchases: 'Columns: supplier, purchase date, material, qty, unit cost, gst rate, notes, and optional delivery + delivery mode and occasion (e.g. "Diwali 2026", or just "Diwali" for that year\'s season). Rows with the same supplier + date become one purchase; put the delivery amount on one row of that bill and it becomes a charge line (no stock). Missing suppliers/materials are created.',
   orders: 'Columns: customer name, phone, order date, event date, event type, product name, qty, unit price, notes. Rows with the same customer + dates become one order. Missing customers/products are created.',
   bom: 'Columns: product, version, material, qty, unit. Links a material into a product version recipe. Missing materials/products/versions are created.',
   production: 'Columns: product, version, expected qty, actual qty, date, notes. Completes a batch and updates stock from the BOM. Product must already have a BOM.',
@@ -581,6 +582,7 @@ function mapPurchase(r: Record<string, string>, row: number, cat: Catalog): Prev
       purchaseDate: cell(r, 'purchase date', 'date'),
       delivery: Number(cell(r, 'delivery', 'delivery amount', 'logistics', 'transport') || 0),
       deliveryMode: cell(r, 'delivery mode', 'logistics company', 'courier'),
+      occasion: cell(r, 'occasion', 'season'),
     },
   }
   if (!supplierName) out.error = 'Supplier required'
@@ -892,6 +894,18 @@ async function commitKind(kind: ImportKind, rows: PreviewRow[], onProgress: (n: 
   if (kind === 'purchases') {
     const supplierIds = new Map<string, string>()
     const materials = new Map<string, Material>(cat.materials.map(m => [m.name.toLowerCase(), m]))
+    const [seasons, occasions] = await Promise.all([
+      occasionService.getAllSeasons().catch(() => []),
+      occasionService.getAllOccasions().catch(() => []),
+    ])
+    const seasonFor = (text: string, year: number): string | null => {
+      const q = text.trim().toLowerCase()
+      if (!q) return null
+      const exact = seasons.find(s => s.name.toLowerCase() === q)
+      if (exact) return exact.id
+      const occ = occasions.find(o => o.name.toLowerCase() === q || o.slug === slugifyOccasion(q))
+      return (occ && seasons.find(s => s.occasionId === occ.id && s.year === year)?.id) || null
+    }
     const groups = new Map<string, PreviewRow[]>()
     for (const row of rows) {
       const key = `${String(row.data.supplierName).toLowerCase()}|${String(row.data.purchaseDate)}`
@@ -936,10 +950,13 @@ async function commitKind(kind: ImportKind, rows: PreviewRow[], onProgress: (n: 
           gstRate: 0,
         })
       }
+      const purchaseDate = parseDate(String(first.purchaseDate)) ?? new Date()
+      const occasionText = String(group.find(row => String(row.data.occasion ?? '').trim())?.data.occasion ?? '')
       await purchaseService.complete({
         supplierId,
-        purchaseDate: Timestamp.fromDate(parseDate(String(first.purchaseDate)) ?? new Date()),
+        purchaseDate: Timestamp.fromDate(purchaseDate),
         notes: String(first.notes ?? 'Bulk import'),
+        occasionSeasonId: seasonFor(occasionText, purchaseDate.getFullYear()),
         items: lines,
         updateMaterialCosts: true,
       })

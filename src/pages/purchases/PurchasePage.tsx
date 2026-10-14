@@ -7,6 +7,7 @@ import { purchaseService, pricePurchase } from '../../services/purchases'
 import { usersService } from '../../services/users'
 import { supplierService } from '../../services/suppliers'
 import { materialService } from '../../services/materials'
+import { occasionService } from '../../services/occasions'
 import { formatCurrency, formatDate } from '../../utils/format'
 import { useToast } from '../../hooks/useToast'
 import LoadingSpinner from '../../components/LoadingSpinner'
@@ -18,7 +19,7 @@ import ConfirmModal from '../../components/ConfirmModal'
 import QuickSelect, { SearchSelect } from '../../components/QuickSelect'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import { GstRateSelect } from '../../components/GstFields'
-import type { Purchase, Supplier, Material, UserRole, WorkerOption } from '../../types'
+import type { Purchase, Supplier, Material, OccasionSeason, UserRole, WorkerOption } from '../../types'
 import { useAuth } from '../../hooks/useAuth'
 import { isAdminOrOwner, isWorker as roleIsWorker, ROLE_LABELS } from '../../utils/roles'
 
@@ -63,6 +64,8 @@ export default function PurchasePage() {
   const [purchasedById, setPurchasedById] = useState('')
   const [purchaseDate, setPurchaseDate] = useState(nowStr())
   const [notes, setNotes] = useState('')
+  const [seasons, setSeasons] = useState<OccasionSeason[]>([])
+  const [occasionSeasonId, setOccasionSeasonId] = useState('')
   const [items, setItems] = useState<LineItem[]>([emptyItem()])
   const [billPhotos, setBillPhotos] = useState<File[]>([])
   const [existingBillUrls, setExistingBillUrls] = useState<string[]>([])
@@ -98,6 +101,7 @@ export default function PurchasePage() {
       materialsRef.current = active
       setMaterials(active)
     })
+    occasionService.getAllSeasons().then(setSeasons).catch(() => setSeasons([]))
   }
 
   const loadHistory = useCallback(() => {
@@ -189,6 +193,14 @@ export default function PurchasePage() {
     [materials],
   )
 
+  const seasonMap = useMemo(() => Object.fromEntries(seasons.map(s => [s.id, s])), [seasons])
+  const seasonOptions = useMemo(() => {
+    const rank = { active: 0, upcoming: 1, closed: 2 } as const
+    return [...seasons]
+      .sort((a, b) => (rank[a.status] ?? 3) - (rank[b.status] ?? 3) || b.year - a.year || a.name.localeCompare(b.name))
+      .map(s => ({ id: s.id, label: s.status === 'active' ? s.name : `${s.name} (${s.status})` }))
+  }, [seasons])
+
   const removeItem = (index: number) => {
     setItems(prev => prev.filter((_, i) => i !== index))
   }
@@ -207,6 +219,7 @@ export default function PurchasePage() {
     setPurchasedById(user?.uid ?? '')
     setPurchaseDate(nowStr())
     setNotes('')
+    setOccasionSeasonId('')
     setItems([emptyItem()])
     setBillPhotos([])
     setExistingBillUrls([])
@@ -222,6 +235,7 @@ export default function PurchasePage() {
       setPurchasedById(p.purchasedById || '')
       setPurchaseDate(toLocalInput(p.purchaseDate))
       setNotes(p.notes || '')
+      setOccasionSeasonId(p.occasionSeasonId || '')
       setExistingBillUrls(p.billPhotoUrls ?? [])
       setBillPhotos([])
       if (fileRef.current) fileRef.current.value = ''
@@ -295,6 +309,7 @@ export default function PurchasePage() {
         purchaseDate: ts,
         notes,
         billPhotoUrls,
+        occasionSeasonId: occasionSeasonId || null,
         items: items.map(i => ({
           kind: i.kind,
           description: i.description,
@@ -442,6 +457,16 @@ export default function PurchasePage() {
                   className="form-control"
                   value={purchaseDate}
                   onChange={e => setPurchaseDate(e.target.value)}
+                />
+              </div>
+              <div className="col-md-6">
+                <QuickSelect
+                  label="Occasion"
+                  value={occasionSeasonId}
+                  onChange={setOccasionSeasonId}
+                  placeholder="Optional · e.g. Diwali 2026 (clear for general stock)"
+                  options={seasonOptions}
+                  searchable
                 />
               </div>
               <div className="col-12">
@@ -638,6 +663,7 @@ export default function PurchasePage() {
                         <th>Date</th>
                         <th>Supplier</th>
                         <th>Paid by</th>
+                        <th>Occasion</th>
                         <th>Total (₹)</th>
                         <th>Charges</th>
                         <th>Materials</th>
@@ -655,6 +681,7 @@ export default function PurchasePage() {
                           <td>{formatDate(p.purchaseDate)}</td>
                           <td>{supplierMap[p.supplierId]?.name ?? p.supplierId}</td>
                           <td>{p.purchasedByName || '—'}</td>
+                          <td>{(p.occasionSeasonId && seasonMap[p.occasionSeasonId]?.name) || '—'}</td>
                           <td>{formatCurrency(total)}</td>
                           <td>
                             {(p.chargesTotal || p.logisticsTotal) ? formatCurrency(Number(p.chargesTotal || 0) + Number(p.logisticsTotal || 0)) : '—'}

@@ -39,10 +39,11 @@ export function pricePurchase(items: Array<Pick<PurchaseLine, 'kind' | 'quantity
   }
 }
 
-function lineDoc(purchaseId: string, item: PurchaseLine, tax: ReturnType<typeof lineTax>) {
+function lineDoc(purchaseId: string, item: PurchaseLine, tax: ReturnType<typeof lineTax>, occasionSeasonId: string | null) {
   const charge = isChargeLine(item)
   return {
     purchaseId,
+    occasionSeasonId,
     kind: charge ? 'charge' : 'material',
     description: charge ? (item.description ?? '').trim() : '',
     materialId: charge ? '' : item.materialId,
@@ -89,6 +90,7 @@ export const purchaseService = {
     purchasedById?: string
     purchasedByName?: string
     paymentStatus?: 'paid' | 'unpaid'
+    occasionSeasonId?: string | null
     updateMaterialCosts?: boolean
   }): Promise<string> {
     const batch = writeBatch(db)
@@ -110,6 +112,7 @@ export const purchaseService = {
       status: 'COMPLETED',
       notes: params.notes,
       billPhotoUrls: params.billPhotoUrls ?? [],
+      occasionSeasonId: params.occasionSeasonId || null,
       ...(params.purchasedById
         ? {
             purchasedById: params.purchasedById,
@@ -121,7 +124,7 @@ export const purchaseService = {
     })
 
     params.items.forEach((item, idx) => {
-      batch.set(doc(collection(db, 'purchaseItems')), lineDoc(purchaseRef.id, item, taxLines[idx]))
+      batch.set(doc(collection(db, 'purchaseItems')), lineDoc(purchaseRef.id, item, taxLines[idx], params.occasionSeasonId || null))
       if (isChargeLine(item)) return
 
       const txRef = doc(collection(db, 'inventoryTransactions'))
@@ -185,6 +188,7 @@ export const purchaseService = {
     billPhotoUrls?: string[]
     purchasedById?: string
     purchasedByName?: string
+    occasionSeasonId?: string | null
     updateMaterialCosts?: boolean
   }): Promise<void> {
     const existing = await this.getItems(id)
@@ -209,6 +213,7 @@ export const purchaseService = {
       billPhotoUrls: params.billPhotoUrls ?? [],
       purchasedById: params.purchasedById ?? '',
       purchasedByName: params.purchasedByName ?? '',
+      occasionSeasonId: params.occasionSeasonId || null,
       updatedAt: serverTimestamp(),
     })
 
@@ -216,7 +221,7 @@ export const purchaseService = {
       batch.delete(doc(db, 'purchaseItems', item.id))
     }
     params.items.forEach((item, idx) => {
-      batch.set(doc(collection(db, 'purchaseItems')), lineDoc(id, item, taxLines[idx]))
+      batch.set(doc(collection(db, 'purchaseItems')), lineDoc(id, item, taxLines[idx], params.occasionSeasonId || null))
     })
 
     const oldQty = new Map<string, { quantity: number; unit: string }>()
