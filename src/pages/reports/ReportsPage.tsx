@@ -1129,6 +1129,8 @@ interface OccasionRow {
   revenue: number
   cogs: number
   profit: number
+  /** qty = number of bills paid */
+  payers: OccasionTop[]
   topMaterials: OccasionTop[]
   topProducts: OccasionTop[]
 }
@@ -1164,7 +1166,7 @@ function OccasionsTab() {
       const materialName = Object.fromEntries(materials.map((m: Material) => [m.id, m.name]))
       const seasonIds = new Set(seasons.map(s => s.id))
 
-      const acc = new Map<string, OccasionRow & { mats: Map<string, OccasionTop>; prods: Map<string, OccasionTop> }>()
+      const acc = new Map<string, OccasionRow & { pays: Map<string, OccasionTop>; mats: Map<string, OccasionTop>; prods: Map<string, OccasionTop> }>()
       const rowFor = (seasonId: string | null | undefined) => {
         const key = seasonId && seasonIds.has(seasonId) ? seasonId : UNASSIGNED_SEASON
         let row = acc.get(key)
@@ -1177,8 +1179,8 @@ function OccasionsTab() {
             status: s?.status ?? '',
             bills: 0, purchases: 0, productionQty: 0, productionCost: 0,
             unitsSold: 0, revenue: 0, cogs: 0, profit: 0,
-            topMaterials: [], topProducts: [],
-            mats: new Map(), prods: new Map(),
+            payers: [], topMaterials: [], topProducts: [],
+            pays: new Map(), mats: new Map(), prods: new Map(),
           }
           acc.set(key, row)
         }
@@ -1189,8 +1191,14 @@ function OccasionsTab() {
       const purchaseSeason = new Map(purchases.map(p => [p.id, p.occasionSeasonId ?? null]))
       for (const p of purchases) {
         const row = rowFor(p.occasionSeasonId)
+        const amount = Number(p.grandTotal ?? p.total ?? 0)
         row.bills += 1
-        row.purchases += Number(p.grandTotal ?? p.total ?? 0)
+        row.purchases += amount
+        const payerKey = p.purchasedById || p.purchasedByName || ''
+        const payer = row.pays.get(payerKey) ?? { name: p.purchasedByName || 'Not recorded', qty: 0, amount: 0 }
+        payer.qty += 1
+        payer.amount += amount
+        row.pays.set(payerKey, payer)
       }
       for (const item of purchaseItems) {
         if (item.kind === 'charge' || !item.materialId || !purchaseSeason.has(item.purchaseId)) continue
@@ -1231,7 +1239,12 @@ function OccasionsTab() {
 
       const statusRank: Record<string, number> = { active: 0, upcoming: 1, closed: 2 }
       const next = [...acc.values()]
-        .map(({ mats, prods, ...row }) => ({ ...row, topMaterials: topOf(mats), topProducts: topOf(prods) }))
+        .map(({ pays, mats, prods, ...row }) => ({
+          ...row,
+          payers: topOf(pays, Infinity),
+          topMaterials: topOf(mats),
+          topProducts: topOf(prods),
+        }))
         .filter(r => r.key !== UNASSIGNED_SEASON || r.bills || r.productionQty || r.unitsSold)
         .sort((a, b) => {
           if (a.key === UNASSIGNED_SEASON) return 1
@@ -1268,7 +1281,13 @@ function OccasionsTab() {
     Occasion: r.name,
     Year: r.year ?? '',
     Status: r.status,
-    ...(canSeeSpend ? { Bills: r.bills, 'Purchases (₹)': r.purchases } : {}),
+    ...(canSeeSpend
+      ? {
+          Bills: r.bills,
+          'Purchases (₹)': r.purchases,
+          'Paid by': r.payers.map(p => `${p.name}: ${p.amount.toFixed(2)} (${p.qty} bill${p.qty === 1 ? '' : 's'})`).join('; '),
+        }
+      : {}),
     'Produced qty': r.productionQty,
     'Production cost (₹)': r.productionCost,
     'Units sold': r.unitsSold,
@@ -1376,7 +1395,24 @@ function OccasionsTab() {
                             <td colSpan={colCount}>
                               <div className="row g-3 py-1">
                                 {canSeeSpend && (
-                                  <div className="col-md-6">
+                                  <div className="col-md-4">
+                                    <div className="small fw-semibold mb-1">Who paid</div>
+                                    {r.payers.length === 0 ? (
+                                      <div className="small text-muted">No purchases tagged to this occasion.</div>
+                                    ) : (
+                                      <ul className="list-unstyled small mb-0">
+                                        {r.payers.map((p, i) => (
+                                          <li key={`${p.name}-${i}`} className="d-flex justify-content-between gap-2">
+                                            <span>{p.name} <span className="text-muted">· {p.qty} bill{p.qty === 1 ? '' : 's'}</span></span>
+                                            <span>{formatCurrency(p.amount)}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                )}
+                                {canSeeSpend && (
+                                  <div className="col-md-4">
                                     <div className="small fw-semibold mb-1">Top materials bought</div>
                                     {r.topMaterials.length === 0 ? (
                                       <div className="small text-muted">No purchases tagged to this occasion.</div>
@@ -1392,7 +1428,7 @@ function OccasionsTab() {
                                     )}
                                   </div>
                                 )}
-                                <div className="col-md-6">
+                                <div className={canSeeSpend ? 'col-md-4' : 'col-md-6'}>
                                   <div className="small fw-semibold mb-1">Top products sold</div>
                                   {r.topProducts.length === 0 ? (
                                     <div className="small text-muted">No sales for this occasion yet.</div>
