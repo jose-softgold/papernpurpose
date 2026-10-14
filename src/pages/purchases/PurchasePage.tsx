@@ -23,6 +23,9 @@ import { useAuth } from '../../hooks/useAuth'
 import { isAdminOrOwner, isWorker as roleIsWorker, ROLE_LABELS } from '../../utils/roles'
 
 interface LineItem {
+  kind: 'material' | 'charge'
+  /** Charge label, e.g. "Porter delivery" */
+  description: string
   materialId: string
   quantity: string
   unitCost: number
@@ -40,22 +43,12 @@ const toLocalInput = (ts?: Timestamp | null) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-const emptyItem = (gstRate = 0): LineItem => ({ materialId: '', quantity: '1', unitCost: 0, gstRate })
+const emptyItem = (gstRate = 0): LineItem => ({ kind: 'material', description: '', materialId: '', quantity: '1', unitCost: 0, gstRate })
+const emptyCharge = (): LineItem => ({ kind: 'charge', description: '', materialId: '', quantity: '1', unitCost: 0, gstRate: 0 })
+
+const CHARGE_SUGGESTIONS = ['Porter delivery', 'DTDC courier', 'Rapido delivery', 'Transport', 'Loading / unloading']
 
 type PurchaserOption = WorkerOption & { role: UserRole }
-
-interface DeliveryForm {
-  mode: string
-  amount: string
-  gstRate: number
-  /** Empty means the same person who paid the supplier. */
-  paidById: string
-  photoUrls: string[]
-}
-
-const emptyDelivery = (): DeliveryForm => ({ mode: '', amount: '', gstRate: 0, paidById: '', photoUrls: [] })
-
-const DELIVERY_MODES = ['Porter', 'DTDC', 'Rapido', 'Self', 'Other']
 
 export default function PurchasePage() {
   const { toasts, showToast } = useToast()
@@ -73,9 +66,6 @@ export default function PurchasePage() {
   const [items, setItems] = useState<LineItem[]>([emptyItem()])
   const [billPhotos, setBillPhotos] = useState<File[]>([])
   const [existingBillUrls, setExistingBillUrls] = useState<string[]>([])
-  const [delivery, setDelivery] = useState<DeliveryForm>(emptyDelivery())
-  const [deliveryPhotos, setDeliveryPhotos] = useState<File[]>([])
-  const deliveryFileRef = useRef<HTMLInputElement>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [loadingEdit, setLoadingEdit] = useState(false)
   const [deleting, setDeleting] = useState<Purchase | null>(null)
@@ -196,20 +186,12 @@ export default function PurchasePage() {
     setItems(prev => prev.filter((_, i) => i !== index))
   }
 
-  const {
-    taxLines,
-    taxableSubtotal,
-    gstTotal,
-    materialsTotal,
-    logisticsTotal,
-    grandTotal,
-    landedUnitCosts,
-  } = pricePurchase(
-    items.map(i => ({ quantity: parseFloat(i.quantity) || 0, unitCost: i.unitCost, gstRate: i.gstRate })),
-    { mode: delivery.mode, amount: parseFloat(delivery.amount) || 0, gstRate: delivery.gstRate },
+  const { taxLines, taxableSubtotal, gstTotal, chargesTotal, grandTotal } = pricePurchase(
+    items.map(i => ({ kind: i.kind, quantity: parseFloat(i.quantity) || 0, unitCost: i.unitCost, gstRate: i.gstRate })),
   )
-  const deliveryAmount = parseFloat(delivery.amount) || 0
-  const canSubmit = supplierId && purchasedById && items.length > 0 && items.every(i => i.materialId && parseFloat(i.quantity) > 0)
+  const lineReady = (i: LineItem) =>
+    parseFloat(i.quantity) > 0 && (i.kind === 'charge' ? Boolean(i.description.trim()) && i.unitCost > 0 : Boolean(i.materialId))
+  const canSubmit = supplierId && purchasedById && items.some(i => i.kind === 'material') && items.every(lineReady)
   const formRef = useRef<HTMLDivElement>(null)
 
   const resetForm = () => {
@@ -222,9 +204,6 @@ export default function PurchasePage() {
     setBillPhotos([])
     setExistingBillUrls([])
     if (fileRef.current) fileRef.current.value = ''
-    setDelivery(emptyDelivery())
-    setDeliveryPhotos([])
-    if (deliveryFileRef.current) deliveryFileRef.current.value = ''
   }
 
   const startEdit = async (p: Purchase) => {
@@ -239,26 +218,25 @@ export default function PurchasePage() {
       setExistingBillUrls(p.billPhotoUrls ?? [])
       setBillPhotos([])
       if (fileRef.current) fileRef.current.value = ''
-      const log = p.logistics
-      setDelivery(log
-        ? {
-            mode: log.mode || '',
-            amount: log.amount ? String(log.amount) : '',
-            gstRate: Number(log.gstRate ?? 0),
-            paidById: log.paidById && log.paidById !== p.purchasedById ? log.paidById : '',
-            photoUrls: log.photoUrls ?? [],
-          }
-        : emptyDelivery())
-      setDeliveryPhotos([])
-      if (deliveryFileRef.current) deliveryFileRef.current.value = ''
-      setItems(lines.length
-        ? lines.map(line => ({
-            materialId: line.materialId,
-            quantity: String(line.quantity),
-            unitCost: Number(line.unitCost ?? 0),
-            gstRate: Number(line.gstRate ?? 0),
-          }))
-        : [emptyItem()])
+      const loaded: LineItem[] = lines.map(line => ({
+        kind: line.kind === 'charge' ? 'charge' : 'material',
+        description: line.description ?? '',
+        materialId: line.materialId,
+        quantity: String(line.quantity),
+        unitCost: Number(line.unitCost ?? 0),
+        gstRate: Number(line.gstRate ?? 0),
+      }))
+      loaded.sort((a, b) => Number(a.kind === 'charge') - Number(b.kind === 'charge'))
+      const legacy = p.logistics
+      if (legacy && Number(legacy.amount) > 0) {
+        loaded.push({
+          ...emptyCharge(),
+          description: ['Delivery', legacy.mode?.trim()].filter(Boolean).join(' · '),
+          unitCost: Number(legacy.amount),
+          gstRate: Number(legacy.gstRate ?? 0),
+        })
+      }
+      setItems(loaded.length ? loaded : [emptyItem()])
       formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     } catch (err) {
       showToast('Could not open this purchase', 'danger')
@@ -301,18 +279,8 @@ export default function PurchasePage() {
           }))
         : []
       const billPhotoUrls = [...existingBillUrls, ...uploaded]
-      const deliveryUploaded = deliveryPhotos.length
-        ? await Promise.all(deliveryPhotos.map(async file => {
-            const tmpId = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-            const sRef = storageRef(storage, `purchases/${editingId ?? 'pending'}/delivery-${tmpId}-${file.name}`)
-            await uploadBytes(sRef, file)
-            return getDownloadURL(sRef)
-          }))
-        : []
 
       const buyer = purchaserOptions.find(u => u.id === purchasedById)
-      const deliveryPayerId = delivery.paidById || purchasedById
-      const deliveryPayer = purchaserOptions.find(u => u.id === deliveryPayerId)
       const payload = {
         supplierId,
         purchasedById,
@@ -321,21 +289,15 @@ export default function PurchasePage() {
         notes,
         billPhotoUrls,
         items: items.map(i => ({
-          materialId: i.materialId,
+          kind: i.kind,
+          description: i.description,
+          materialId: i.kind === 'charge' ? '' : i.materialId,
           quantity: parseFloat(i.quantity) || 0,
           unitCost: i.unitCost,
-          unit: materialMap[i.materialId]?.unit ?? '',
+          unit: i.kind === 'charge' ? '' : (materialMap[i.materialId]?.unit ?? ''),
           gstRate: i.gstRate,
         })),
         updateMaterialCosts: canManage,
-        logistics: {
-          mode: delivery.mode,
-          amount: deliveryAmount,
-          gstRate: delivery.gstRate,
-          paidById: deliveryPayerId,
-          paidByName: deliveryPayer?.name || buyer?.name || userDoc?.name || '',
-          photoUrls: [...delivery.photoUrls, ...deliveryUploaded],
-        },
       }
       if (editingId) {
         await purchaseService.update(editingId, payload)
@@ -356,15 +318,28 @@ export default function PurchasePage() {
 
   const lineEditor = (item: LineItem, idx: number) => (
     <>
-      <QuickSelect
-        label="Material"
-        required
-        value={item.materialId}
-        onChange={id => setMaterial(idx, id)}
-        placeholder="Select material…"
-        options={materials.map(m => ({ id: m.id, label: `${m.name} (${m.unit})` }))}
-        onAdd={() => { setMaterialTarget(idx); setQuick('material') }}
-      />
+      {item.kind === 'charge' ? (
+        <div>
+          <label className="form-label">Charge <span className="text-danger">*</span></label>
+          <input
+            className="form-control"
+            list="charge-suggestions"
+            value={item.description}
+            onChange={e => updateItem(idx, { description: e.target.value })}
+            placeholder="e.g. Porter delivery"
+          />
+        </div>
+      ) : (
+        <QuickSelect
+          label="Material"
+          required
+          value={item.materialId}
+          onChange={id => setMaterial(idx, id)}
+          placeholder="Select material…"
+          options={materials.map(m => ({ id: m.id, label: `${m.name} (${m.unit})` }))}
+          onAdd={() => { setMaterialTarget(idx); setQuick('material') }}
+        />
+      )}
       <div className="mt-2">
         <label className="form-label">Quantity</label>
         <input
@@ -383,7 +358,7 @@ export default function PurchasePage() {
           className="form-control"
           min={0}
           step="0.01"
-          value={item.materialId ? item.unitCost : ''}
+          value={item.materialId || item.kind === 'charge' ? item.unitCost || '' : ''}
           placeholder="0"
           onChange={e => updateItem(idx, { unitCost: parseFloat(e.target.value) || 0 })}
         />
@@ -433,9 +408,10 @@ export default function PurchasePage() {
                   required
                   value={supplierId}
                   onChange={setSupplierId}
-                  placeholder="Select supplier…"
-                  options={suppliers.map(s => ({ id: s.id, label: s.name }))}
+                  placeholder="Type to search suppliers…"
+                  options={[...suppliers].sort((a, b) => a.name.localeCompare(b.name)).map(s => ({ id: s.id, label: s.name }))}
                   onAdd={() => setQuick('supplier')}
+                  searchable
                 />
               </div>
               <div className="col-md-6">
@@ -504,7 +480,7 @@ export default function PurchasePage() {
               <table className="table table-sm table-bordered align-middle">
                 <thead className="table-light">
                   <tr>
-                    <th>Material</th>
+                    <th>Material / charge</th>
                     <th style={{ width: '100px' }}>Qty</th>
                     <th style={{ width: '120px' }}>Unit cost</th>
                     <th style={{ width: '110px' }}>GST</th>
@@ -516,19 +492,32 @@ export default function PurchasePage() {
                   {items.map((item, idx) => (
                     <tr key={idx}>
                       <td>
-                        <div className="d-flex gap-1">
-                          <select className="form-select form-select-sm" value={item.materialId} onChange={e => setMaterial(idx, e.target.value)}>
-                            <option value="">Select…</option>
-                            {materials.map(m => <option key={m.id} value={m.id}>{m.name} ({m.unit})</option>)}
-                          </select>
-                          <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => { setMaterialTarget(idx); setQuick('material') }}>+</button>
-                        </div>
+                        {item.kind === 'charge' ? (
+                          <div className="d-flex gap-1 align-items-center">
+                            <span className="badge text-bg-warning">Charge</span>
+                            <input
+                              className="form-control form-control-sm"
+                              list="charge-suggestions"
+                              value={item.description}
+                              onChange={e => updateItem(idx, { description: e.target.value })}
+                              placeholder="e.g. Porter delivery"
+                            />
+                          </div>
+                        ) : (
+                          <div className="d-flex gap-1">
+                            <select className="form-select form-select-sm" value={item.materialId} onChange={e => setMaterial(idx, e.target.value)}>
+                              <option value="">Select…</option>
+                              {materials.map(m => <option key={m.id} value={m.id}>{m.name} ({m.unit})</option>)}
+                            </select>
+                            <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => { setMaterialTarget(idx); setQuick('material') }}>+</button>
+                          </div>
+                        )}
                       </td>
                       <td>
                         <input type="number" className="form-control form-control-sm" min="0" value={item.quantity} onChange={e => updateItem(idx, { quantity: e.target.value })} />
                       </td>
                       <td>
-                        <input type="number" className="form-control form-control-sm" min={0} step="0.01" value={item.materialId ? item.unitCost : ''} placeholder="0" onChange={e => updateItem(idx, { unitCost: parseFloat(e.target.value) || 0 })} />
+                        <input type="number" className="form-control form-control-sm" min={0} step="0.01" value={item.materialId || item.kind === 'charge' ? item.unitCost || '' : ''} placeholder="0" onChange={e => updateItem(idx, { unitCost: parseFloat(e.target.value) || 0 })} />
                       </td>
                         <td>
                           <GstRateSelect
@@ -539,12 +528,7 @@ export default function PurchasePage() {
                             onChange={rate => updateItem(idx, { gstRate: rate })}
                           />
                         </td>
-                      <td>
-                        {formatCurrency(taxLines[idx].lineTotal)}
-                        {deliveryAmount > 0 && item.materialId && (
-                          <div className="small text-muted">{formatCurrency(landedUnitCosts[idx])}/unit with delivery</div>
-                        )}
-                      </td>
+                      <td>{formatCurrency(taxLines[idx].lineTotal)}</td>
                       <td>
                         <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeItem(idx)} disabled={items.length === 1}>✕</button>
                       </td>
@@ -558,7 +542,7 @@ export default function PurchasePage() {
               {items.map((item, idx) => (
                 <div key={idx} className="pc-line-card mb-2">
                   <div className="d-flex justify-content-between mb-2">
-                    <strong>Item {idx + 1}</strong>
+                    <strong>{item.kind === 'charge' ? 'Charge' : 'Item'} {idx + 1}</strong>
                     <button type="button" className="btn btn-sm btn-outline-danger" onClick={() => removeItem(idx)} disabled={items.length === 1}>Remove</button>
                   </div>
                   {lineEditor(item, idx)}
@@ -566,92 +550,27 @@ export default function PurchasePage() {
               ))}
             </div>
 
-            <div className="d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
-              <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setItems(prev => [...prev, emptyItem()])}>
-                + Add Item
-              </button>
-              <div className="text-end">
-                <div className="small text-muted">Taxable {formatCurrency(taxableSubtotal)} · GST {formatCurrency(gstTotal)}</div>
-                <div className="small">Materials {formatCurrency(materialsTotal)}</div>
-              </div>
-            </div>
-
-            <h6 className="mb-2">Delivery / logistics</h6>
-            <div className="row g-3 mb-2">
-              <div className="col-md-3">
-                <label className="form-label">Mode / company</label>
-                <input
-                  className="form-control"
-                  list="delivery-mode-options"
-                  value={delivery.mode}
-                  onChange={e => setDelivery(d => ({ ...d, mode: e.target.value }))}
-                  placeholder="e.g. Porter"
-                />
-                <datalist id="delivery-mode-options">
-                  {DELIVERY_MODES.map(m => <option key={m} value={m} />)}
+            <div className="d-flex align-items-start justify-content-between mb-3 flex-wrap gap-2">
+              <div className="d-flex gap-2 flex-wrap">
+                <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setItems(prev => [...prev, emptyItem()])}>
+                  + Add Item
+                </button>
+                <button type="button" className="btn btn-outline-warning btn-sm" onClick={() => setItems(prev => [...prev, emptyCharge()])}>
+                  + Add Charge
+                </button>
+                <datalist id="charge-suggestions">
+                  {CHARGE_SUGGESTIONS.map(c => <option key={c} value={c} />)}
                 </datalist>
               </div>
-              <div className="col-md-3">
-                <label className="form-label">Amount (₹, taxable)</label>
-                <input
-                  type="number"
-                  className="form-control"
-                  min={0}
-                  step="0.01"
-                  value={delivery.amount}
-                  onChange={e => setDelivery(d => ({ ...d, amount: e.target.value }))}
-                  placeholder="0"
-                />
-              </div>
-              <div className="col-md-2">
-                <GstRateSelect value={delivery.gstRate} onChange={rate => setDelivery(d => ({ ...d, gstRate: rate }))} />
-              </div>
-              <div className="col-md-4">
-                <QuickSelect
-                  label="Delivery paid by"
-                  value={delivery.paidById}
-                  onChange={id => setDelivery(d => ({ ...d, paidById: id }))}
-                  placeholder="Same as purchase"
-                  options={purchaserOptions.map(u => ({
-                    id: u.id,
-                    label: `${u.name} · ${ROLE_LABELS[u.role]}`,
-                  }))}
-                />
-              </div>
-              <div className="col-12">
-                <label className="form-label">Delivery receipt</label>
-                {delivery.photoUrls.length > 0 && (
-                  <div className="d-flex flex-wrap gap-2 mb-2">
-                    {delivery.photoUrls.map((url, i) => (
-                      <span key={url} className="badge text-bg-light border">
-                        Receipt {i + 1}
-                        <button
-                          type="button"
-                          className="btn btn-sm btn-link p-0 ms-1"
-                          onClick={() => setDelivery(d => ({ ...d, photoUrls: d.photoUrls.filter(u => u !== url) }))}
-                        >
-                          Remove
-                        </button>
-                      </span>
-                    ))}
-                  </div>
+              <div className="text-end">
+                <div className="small text-muted">Taxable {formatCurrency(taxableSubtotal)} · GST {formatCurrency(gstTotal)}</div>
+                {chargesTotal > 0 && (
+                  <div className="small">Materials {formatCurrency(grandTotal - chargesTotal)} · Charges {formatCurrency(chargesTotal)}</div>
                 )}
-                <input
-                  ref={deliveryFileRef}
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="form-control"
-                  onChange={e => setDeliveryPhotos(e.target.files ? Array.from(e.target.files) : [])}
-                />
-                <div className="form-text">Delivery does not add stock. It is shared across the lines by value and added to each material's cost.</div>
+                <div className="fw-bold">Grand total {formatCurrency(grandTotal)}</div>
               </div>
             </div>
-
-            <div className="text-end mb-3">
-              {logisticsTotal > 0 && <div className="small">Delivery {formatCurrency(logisticsTotal)}</div>}
-              <div className="fw-bold">Grand total {formatCurrency(grandTotal)}</div>
-            </div>
+            <div className="form-text mb-3">Charges such as delivery are part of the bill only. They do not add stock or change any material's cost.</div>
 
             <div className="pc-sticky-submit">
               <button type="submit" className="btn btn-primary w-100 w-lg-auto" disabled={!canSubmit || submitting || loadingEdit}>
@@ -709,7 +628,7 @@ export default function PurchasePage() {
                         <th>Supplier</th>
                         <th>Paid by</th>
                         <th>Total (₹)</th>
-                        <th>Delivery</th>
+                        <th>Charges</th>
                         <th>Materials</th>
                         <th>Total Qty</th>
                         <th></th>
@@ -727,9 +646,7 @@ export default function PurchasePage() {
                           <td>{p.purchasedByName || '—'}</td>
                           <td>{formatCurrency(total)}</td>
                           <td>
-                            {p.logisticsTotal
-                              ? <>{formatCurrency(p.logisticsTotal)}{p.logistics?.mode ? <div className="small text-muted">{p.logistics.mode}</div> : null}</>
-                              : '—'}
+                            {(p.chargesTotal || p.logisticsTotal) ? formatCurrency(Number(p.chargesTotal || 0) + Number(p.logisticsTotal || 0)) : '—'}
                           </td>
                           <td>{p.itemCount ?? '—'}</td>
                           <td>{p.totalQty ?? '—'}</td>

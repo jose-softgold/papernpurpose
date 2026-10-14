@@ -8,7 +8,7 @@ import { supplierService } from '../../services/suppliers'
 import { materialService } from '../../services/materials'
 import { productService } from '../../services/products'
 import { orderService } from '../../services/orders'
-import { purchaseService } from '../../services/purchases'
+import { purchaseService, type PurchaseLine } from '../../services/purchases'
 import { bomService } from '../../services/bom'
 import { productionService } from '../../services/production'
 import { occasionService } from '../../services/occasions'
@@ -152,7 +152,7 @@ const HINTS: Record<ImportKind, string> = {
   suppliers: 'Columns: name, type, phone, email, city, address, gstin, company name, contact person, notes.',
   materials: 'Columns: name, category, unit, color/spec, minimum stock, cost per unit, gst rate, hsn, supplier, notes/description. Missing suppliers are created.',
   products: 'Columns: name, category, description, selling price, gst rate, hsn, version, notes. A version is created if missing (default V1).',
-  purchases: 'Columns: supplier, purchase date, material, qty, unit cost, gst rate, notes, and optional delivery + delivery mode. Rows with the same supplier + date become one purchase; put the delivery amount on one row of that bill. Missing suppliers/materials are created.',
+  purchases: 'Columns: supplier, purchase date, material, qty, unit cost, gst rate, notes, and optional delivery + delivery mode. Rows with the same supplier + date become one purchase; put the delivery amount on one row of that bill and it becomes a charge line (no stock). Missing suppliers/materials are created.',
   orders: 'Columns: customer name, phone, order date, event date, event type, product name, qty, unit price, notes. Rows with the same customer + dates become one order. Missing customers/products are created.',
   bom: 'Columns: product, version, material, qty, unit. Links a material into a product version recipe. Missing materials/products/versions are created.',
   production: 'Columns: product, version, expected qty, actual qty, date, notes. Completes a batch and updates stock from the BOM. Product must already have a BOM.',
@@ -924,15 +924,24 @@ async function commitKind(kind: ImportKind, rows: PreviewRow[], onProgress: (n: 
         onProgress(++n)
       }
       const deliveryRow = group.find(row => Number(row.data.delivery) > 0)?.data
+      const lines: PurchaseLine[] = [...items]
+      if (deliveryRow) {
+        lines.push({
+          kind: 'charge',
+          description: ['Delivery', String(deliveryRow.deliveryMode ?? '').trim()].filter(Boolean).join(' · '),
+          materialId: '',
+          quantity: 1,
+          unitCost: Number(deliveryRow.delivery),
+          unit: '',
+          gstRate: 0,
+        })
+      }
       await purchaseService.complete({
         supplierId,
         purchaseDate: Timestamp.fromDate(parseDate(String(first.purchaseDate)) ?? new Date()),
         notes: String(first.notes ?? 'Bulk import'),
-        items,
+        items: lines,
         updateMaterialCosts: true,
-        logistics: deliveryRow
-          ? { mode: String(deliveryRow.deliveryMode ?? ''), amount: Number(deliveryRow.delivery), gstRate: 0 }
-          : null,
       })
     }
     return n

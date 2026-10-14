@@ -313,9 +313,11 @@ export interface Purchase {
   notes: string
   createdAt: Timestamp
   billPhotoUrls?: string[]
-  /** Delivery from the supplier; never adds stock. */
+  /** Sum of charge lines (delivery, labour…) including GST; part of grandTotal. */
+  chargesTotal?: number
+  /** Legacy delivery block; new purchases record delivery as a 'charge' line instead. */
   logistics?: PurchaseLogistics | null
-  /** Delivery amount including GST; already part of grandTotal. */
+  /** Legacy delivery amount including GST; already part of grandTotal. */
   logisticsTotal?: number
 }
 
@@ -333,10 +335,14 @@ export interface PurchaseLogistics {
 export interface PurchaseItem {
   id: string
   purchaseId: string
+  /** 'charge' lines (delivery, labour…) add to the bill only: no stock, no material cost. */
+  kind?: 'material' | 'charge'
+  /** Label for a charge line; materialId is empty for charges. */
+  description?: string
   materialId: string
   quantity: number
   unitCost: number
-  /** unitCost plus this line's share of the purchase delivery charge */
+  /** Legacy: unitCost plus a share of the old delivery block */
   landedUnitCost?: number
   total: number
   gstRate?: number

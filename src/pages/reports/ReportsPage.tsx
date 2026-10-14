@@ -945,7 +945,20 @@ function PurchasesTab() {
             subtotal: Number(item.taxableAmount ?? item.total ?? 0),
             rate: Number(item.unitCost ?? 0),
             qty: Number(item.quantity ?? 0),
-            item: materialMap[item.materialId] || item.materialId,
+            item: item.kind === 'charge'
+              ? `${item.description || 'Charge'} (charge)`
+              : materialMap[item.materialId] || item.materialId,
+          })
+        }
+        if (p.logisticsTotal && p.logistics) {
+          next.push({
+            ...base,
+            id: `${p.id}-delivery`,
+            amountPaid: Number(p.logisticsTotal),
+            subtotal: Number(p.logistics.amount ?? 0),
+            rate: Number(p.logistics.amount ?? 0),
+            qty: 1,
+            item: `${['Delivery', p.logistics.mode].filter(Boolean).join(' · ')} (charge)`,
           })
         }
       }

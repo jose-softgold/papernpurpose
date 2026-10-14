@@ -4,13 +4,15 @@ import { materialService } from '../../services/materials'
 import { bomService } from '../../services/bom'
 import { productService } from '../../services/products'
 import { inventoryService } from '../../services/inventory'
-import type { BomItem, Material, Product, ProductVersion } from '../../types'
+import { purchaseService } from '../../services/purchases'
+import { supplierService } from '../../services/suppliers'
+import type { BomItem, Material, Product, ProductVersion, Purchase, PurchaseItem } from '../../types'
 import LoadingSpinner from '../../components/LoadingSpinner'
 import PageHeader from '../../components/PageHeader'
 import { useToast } from '../../hooks/useToast'
 import ToastContainer from '../../components/ToastContainer'
 import ConfirmModal from '../../components/ConfirmModal'
-import { formatCurrency } from '../../utils/format'
+import { formatCurrency, formatDate } from '../../utils/format'
 import { gstLabel } from '../../utils/tax'
 import { useAuth } from '../../hooks/useAuth'
 import { canWriteMaster, isWorker as roleIsWorker } from '../../utils/roles'
@@ -34,6 +36,7 @@ export default function MaterialDetail() {
   const [qty, setQty] = useState('1')
   const [saving, setSaving] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [buys, setBuys] = useState<Array<{ item: PurchaseItem; purchase: Purchase; supplier: string }>>([])
 
   const handleDelete = async () => {
     if (!material) return
@@ -73,6 +76,19 @@ export default function MaterialDetail() {
         const product = version ? prodMap[version.productId] : undefined
         return product && version ? [{ bom: b, product, version }] : []
       }))
+      const [lines, purchases, suppliers] = await Promise.all([
+        purchaseService.getItemsByMaterial(id),
+        purchaseService.getAll(),
+        supplierService.getAll(),
+      ]).catch(() => [[], [], []] as [PurchaseItem[], Purchase[], Awaited<ReturnType<typeof supplierService.getAll>>])
+      const purchaseMap = Object.fromEntries(purchases.map(p => [p.id, p]))
+      const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s.name]))
+      setBuys(lines
+        .flatMap(item => {
+          const purchase = purchaseMap[item.purchaseId]
+          return purchase ? [{ item, purchase, supplier: supplierMap[purchase.supplierId] ?? '—' }] : []
+        })
+        .sort((a, b) => (b.purchase.purchaseDate?.toMillis?.() ?? 0) - (a.purchase.purchaseDate?.toMillis?.() ?? 0)))
     } catch {
       showToast('Failed to load material', 'danger')
     } finally {
@@ -202,6 +218,49 @@ export default function MaterialDetail() {
                     </td>
                     <td>{l.version.version}</td>
                     <td>{l.bom.quantity} {l.bom.unit}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="card mb-3">
+        <div className="card-header d-flex justify-content-between align-items-center">
+          <h5 className="mb-0">Purchase history</h5>
+          {buys.length > 0 && (
+            <small className="text-muted">
+              {buys.reduce((s, b) => s + Number(b.item.quantity || 0), 0)} {material.unit} bought in {buys.length} purchase{buys.length === 1 ? '' : 's'}
+            </small>
+          )}
+        </div>
+        {buys.length === 0 ? (
+          <div className="card-body text-muted">No purchases recorded for this material yet.</div>
+        ) : (
+          <div className="table-responsive">
+            <table className="table mb-0">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Supplier</th>
+                  <th>Paid by</th>
+                  <th className="text-end">Qty</th>
+                  {!isWorker && <th className="text-end">Unit cost</th>}
+                  {!isWorker && <th className="text-end">GST</th>}
+                  {!isWorker && <th className="text-end">Line total</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {buys.map(({ item, purchase, supplier }) => (
+                  <tr key={item.id}>
+                    <td>{formatDate(purchase.purchaseDate)}</td>
+                    <td>{supplier}</td>
+                    <td>{purchase.purchasedByName || '—'}</td>
+                    <td className="text-end">{item.quantity} {material.unit}</td>
+                    {!isWorker && <td className="text-end">{formatCurrency(item.unitCost)}</td>}
+                    {!isWorker && <td className="text-end">{gstLabel(item.gstRate)}</td>}
+                    {!isWorker && <td className="text-end">{formatCurrency(item.total)}</td>}
                   </tr>
                 ))}
               </tbody>

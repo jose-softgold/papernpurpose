@@ -1,6 +1,6 @@
 import { collection, doc, getDoc, getDocs, query, where, orderBy, serverTimestamp, writeBatch, Timestamp, WriteBatch } from 'firebase/firestore'
 import { db, auth } from '../firebase/config'
-import { Purchase, PurchaseItem, PurchaseLogistics } from '../types'
+import { Purchase, PurchaseItem } from '../types'
 import { lineTax, roundMoney } from '../utils/tax'
 import { createHash } from '../utils/hash'
 import { auditService } from './audit'
@@ -13,62 +13,60 @@ export function purchaseIsPaid(p: Purchase, bankPaid = 0): boolean {
   return total > 0 && bankPaid + 0.009 >= total
 }
 
-type PurchaseLine = { materialId: string; quantity: number; unitCost: number; unit: string; gstRate?: number }
-export type LogisticsInput = Omit<PurchaseLogistics, 'gstAmount'>
+export type PurchaseLine = {
+  kind?: 'material' | 'charge'
+  description?: string
+  materialId: string
+  quantity: number
+  unitCost: number
+  unit: string
+  gstRate?: number
+}
 
-/**
- * Totals for a purchase. Delivery (taxable) is shared across lines by taxable value,
- * so each line's landed unit cost includes its part of the delivery charge.
- */
-export function pricePurchase(items: Array<Pick<PurchaseLine, 'quantity' | 'unitCost' | 'gstRate'>>, logistics?: LogisticsInput | null) {
+export const isChargeLine = (l: Pick<PurchaseLine, 'kind'>) => l.kind === 'charge'
+
+export function pricePurchase(items: Array<Pick<PurchaseLine, 'kind' | 'quantity' | 'unitCost' | 'gstRate'>>) {
   const taxLines = items.map(i => lineTax(i.quantity, i.unitCost, i.gstRate ?? 0))
   const taxableSubtotal = roundMoney(taxLines.reduce((s, l) => s + l.taxableAmount, 0))
   const gstTotal = roundMoney(taxLines.reduce((s, l) => s + l.gstAmount, 0))
-  const deliveryAmount = Math.max(0, Number(logistics?.amount) || 0)
-  const deliveryGst = roundMoney(deliveryAmount * ((Number(logistics?.gstRate) || 0) / 100))
-  const logisticsTotal = roundMoney(deliveryAmount + deliveryGst)
-  const landedUnitCosts = items.map((item, idx) => {
-    if (!(item.quantity > 0)) return item.unitCost
-    const share = taxableSubtotal > 0 ? deliveryAmount * (taxLines[idx].taxableAmount / taxableSubtotal) : 0
-    return Math.round((item.unitCost + share / item.quantity) * 10000) / 10000
-  })
-  const hasLogistics = deliveryAmount > 0 || Boolean(logistics?.mode?.trim())
-  const storedLogistics: PurchaseLogistics | null = hasLogistics && logistics
-    ? {
-        mode: logistics.mode.trim(),
-        amount: deliveryAmount,
-        gstRate: Number(logistics.gstRate) || 0,
-        gstAmount: deliveryGst,
-        paidById: logistics.paidById ?? '',
-        paidByName: logistics.paidByName ?? '',
-        photoUrls: logistics.photoUrls ?? [],
-      }
-    : null
+  const chargesTotal = roundMoney(items.reduce((s, item, idx) => s + (isChargeLine(item) ? taxLines[idx].lineTotal : 0), 0))
   return {
     taxLines,
     taxableSubtotal,
     gstTotal,
-    materialsTotal: roundMoney(taxableSubtotal + gstTotal),
-    logisticsTotal,
-    grandTotal: roundMoney(taxableSubtotal + gstTotal + logisticsTotal),
-    landedUnitCosts,
-    storedLogistics,
+    chargesTotal,
+    grandTotal: roundMoney(taxableSubtotal + gstTotal),
+  }
+}
+
+function lineDoc(purchaseId: string, item: PurchaseLine, tax: ReturnType<typeof lineTax>) {
+  const charge = isChargeLine(item)
+  return {
+    purchaseId,
+    kind: charge ? 'charge' : 'material',
+    description: charge ? (item.description ?? '').trim() : '',
+    materialId: charge ? '' : item.materialId,
+    quantity: item.quantity,
+    unitCost: item.unitCost,
+    total: tax.lineTotal,
+    gstRate: item.gstRate ?? 0,
+    taxableAmount: tax.taxableAmount,
+    gstAmount: tax.gstAmount,
   }
 }
 
 /** Materials only admins/owners may update, so callers opt in for those roles. */
-async function setLatestMaterialCosts(batch: WriteBatch, items: PurchaseLine[], landedUnitCosts: number[]) {
-  const latest = new Map<string, { landed: number; gstRate: number }>()
-  items.forEach((item, idx) => {
-    const landed = landedUnitCosts[idx]
-    if (item.materialId && landed > 0) latest.set(item.materialId, { landed, gstRate: Number(item.gstRate ?? 0) })
-  })
+async function setLatestMaterialCosts(batch: WriteBatch, items: PurchaseLine[]) {
+  const latest = new Map<string, PurchaseLine>()
+  for (const item of items) {
+    if (!isChargeLine(item) && item.materialId && Number(item.unitCost) > 0) latest.set(item.materialId, item)
+  }
   const existing = await Promise.all([...latest.keys()].map(id => getDoc(doc(db, 'materials', id))))
   for (const snap of existing) {
     if (!snap.exists()) continue
     const item = latest.get(snap.id)!
     batch.update(snap.ref, {
-      costPerUnit: item.landed,
+      costPerUnit: Number(item.unitCost),
       gstRate: Number(item.gstRate ?? 0),
       updatedAt: serverTimestamp(),
     })
@@ -92,11 +90,10 @@ export const purchaseService = {
     purchasedByName?: string
     paymentStatus?: 'paid' | 'unpaid'
     updateMaterialCosts?: boolean
-    logistics?: LogisticsInput | null
   }): Promise<string> {
     const batch = writeBatch(db)
-    const { taxLines, taxableSubtotal, gstTotal, grandTotal, logisticsTotal, landedUnitCosts, storedLogistics } =
-      pricePurchase(params.items, params.logistics)
+    const { taxLines, taxableSubtotal, gstTotal, grandTotal, chargesTotal } = pricePurchase(params.items)
+    const materialLines = params.items.filter(i => !isChargeLine(i))
     const createdBy = auth.currentUser?.uid ?? ''
 
     const purchaseRef = doc(collection(db, 'purchases'))
@@ -107,10 +104,9 @@ export const purchaseService = {
       taxableSubtotal,
       gstTotal,
       grandTotal,
-      logistics: storedLogistics,
-      logisticsTotal,
-      itemCount: params.items.length,
-      totalQty: params.items.reduce((s, i) => s + i.quantity, 0),
+      chargesTotal,
+      itemCount: materialLines.length,
+      totalQty: materialLines.reduce((s, i) => s + i.quantity, 0),
       status: 'COMPLETED',
       notes: params.notes,
       billPhotoUrls: params.billPhotoUrls ?? [],
@@ -125,19 +121,8 @@ export const purchaseService = {
     })
 
     params.items.forEach((item, idx) => {
-      const tax = taxLines[idx]
-      const piRef = doc(collection(db, 'purchaseItems'))
-      batch.set(piRef, {
-        purchaseId: purchaseRef.id,
-        materialId: item.materialId,
-        quantity: item.quantity,
-        unitCost: item.unitCost,
-        landedUnitCost: landedUnitCosts[idx],
-        total: tax.lineTotal,
-        gstRate: item.gstRate ?? 0,
-        taxableAmount: tax.taxableAmount,
-        gstAmount: tax.gstAmount,
-      })
+      batch.set(doc(collection(db, 'purchaseItems')), lineDoc(purchaseRef.id, item, taxLines[idx]))
+      if (isChargeLine(item)) return
 
       const txRef = doc(collection(db, 'inventoryTransactions'))
       batch.set(txRef, {
@@ -153,7 +138,7 @@ export const purchaseService = {
         createdBy,
       })
     })
-    if (params.updateMaterialCosts) await setLatestMaterialCosts(batch, params.items, landedUnitCosts)
+    if (params.updateMaterialCosts) await setLatestMaterialCosts(batch, params.items)
 
     await batch.commit()
     await auditService.log({
@@ -163,7 +148,7 @@ export const purchaseService = {
       after: {
         supplierId: params.supplierId,
         grandTotal,
-        logisticsTotal,
+        chargesTotal,
         itemCount: params.items.length,
         purchasedById: params.purchasedById ?? null,
         purchasedByName: params.purchasedByName ?? null,
@@ -175,6 +160,13 @@ export const purchaseService = {
 
   async listItems(): Promise<PurchaseItem[]> {
     const snap = await getDocs(collection(db, 'purchaseItems'))
+    return snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseItem))
+  },
+
+  async getItemsByMaterial(materialId: string): Promise<PurchaseItem[]> {
+    const snap = await getDocs(
+      query(collection(db, 'purchaseItems'), where('materialId', '==', materialId)),
+    )
     return snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseItem))
   },
 
@@ -194,12 +186,11 @@ export const purchaseService = {
     purchasedById?: string
     purchasedByName?: string
     updateMaterialCosts?: boolean
-    logistics?: LogisticsInput | null
   }): Promise<void> {
     const existing = await this.getItems(id)
     const batch = writeBatch(db)
-    const { taxLines, taxableSubtotal, gstTotal, grandTotal, logisticsTotal, landedUnitCosts, storedLogistics } =
-      pricePurchase(params.items, params.logistics)
+    const { taxLines, taxableSubtotal, gstTotal, grandTotal, chargesTotal } = pricePurchase(params.items)
+    const materialLines = params.items.filter(i => !isChargeLine(i))
     const createdBy = auth.currentUser?.uid ?? ''
 
     batch.update(doc(db, 'purchases', id), {
@@ -209,10 +200,11 @@ export const purchaseService = {
       taxableSubtotal,
       gstTotal,
       grandTotal,
-      logistics: storedLogistics,
-      logisticsTotal,
-      itemCount: params.items.length,
-      totalQty: params.items.reduce((s, i) => s + i.quantity, 0),
+      chargesTotal,
+      logistics: null,
+      logisticsTotal: 0,
+      itemCount: materialLines.length,
+      totalQty: materialLines.reduce((s, i) => s + i.quantity, 0),
       notes: params.notes,
       billPhotoUrls: params.billPhotoUrls ?? [],
       purchasedById: params.purchasedById ?? '',
@@ -224,22 +216,12 @@ export const purchaseService = {
       batch.delete(doc(db, 'purchaseItems', item.id))
     }
     params.items.forEach((item, idx) => {
-      const tax = taxLines[idx]
-      batch.set(doc(collection(db, 'purchaseItems')), {
-        purchaseId: id,
-        materialId: item.materialId,
-        quantity: item.quantity,
-        unitCost: item.unitCost,
-        landedUnitCost: landedUnitCosts[idx],
-        total: tax.lineTotal,
-        gstRate: item.gstRate ?? 0,
-        taxableAmount: tax.taxableAmount,
-        gstAmount: tax.gstAmount,
-      })
+      batch.set(doc(collection(db, 'purchaseItems')), lineDoc(id, item, taxLines[idx]))
     })
 
     const oldQty = new Map<string, { quantity: number; unit: string }>()
     for (const item of existing) {
+      if (isChargeLine(item) || !item.materialId) continue
       const prev = oldQty.get(item.materialId)
       oldQty.set(item.materialId, {
         quantity: (prev?.quantity ?? 0) + item.quantity,
@@ -247,7 +229,7 @@ export const purchaseService = {
       })
     }
     const newQty = new Map<string, { quantity: number; unit: string }>()
-    for (const item of params.items) {
+    for (const item of materialLines) {
       const prev = newQty.get(item.materialId)
       newQty.set(item.materialId, {
         quantity: (prev?.quantity ?? 0) + item.quantity,
@@ -272,7 +254,7 @@ export const purchaseService = {
         createdBy,
       })
     }
-    if (params.updateMaterialCosts) await setLatestMaterialCosts(batch, params.items, landedUnitCosts)
+    if (params.updateMaterialCosts) await setLatestMaterialCosts(batch, params.items)
 
     await batch.commit()
     await auditService.log({
@@ -282,7 +264,7 @@ export const purchaseService = {
       after: {
         supplierId: params.supplierId,
         grandTotal,
-        logisticsTotal,
+        chargesTotal,
         itemCount: params.items.length,
         purchasedById: params.purchasedById ?? null,
         purchasedByName: params.purchasedByName ?? null,
