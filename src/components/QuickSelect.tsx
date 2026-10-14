@@ -2,24 +2,28 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 type Option = { id: string; label: string }
 
-function SearchSelect({
+export function SearchSelect({
   value,
   onChange,
   placeholder,
   options,
   required,
+  small,
 }: {
   value: string
   onChange: (id: string) => void
   placeholder: string
   options: Option[]
   required?: boolean
+  small?: boolean
 }) {
   const selected = options.find(o => o.id === value)
   const [text, setText] = useState(selected?.label ?? '')
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const boxRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [rect, setRect] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null)
 
   useEffect(() => {
     if (!open) setText(selected?.label ?? '')
@@ -32,6 +36,29 @@ function SearchSelect({
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [])
+
+  // Fixed positioning keeps the list visible inside scrolling tables.
+  useEffect(() => {
+    if (!open) return
+    const place = () => {
+      const r = inputRef.current?.getBoundingClientRect()
+      if (!r) return
+      const below = window.innerHeight - r.bottom - 8
+      const above = r.top - 8
+      if (below >= 200 || below >= above) {
+        setRect({ top: r.bottom + 2, left: r.left, width: r.width, maxHeight: Math.min(260, below) })
+      } else {
+        setRect({ bottom: window.innerHeight - r.top + 2, left: r.left, width: r.width, maxHeight: Math.min(260, above) })
+      }
+    }
+    place()
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open])
 
   const matches = useMemo(() => {
     const q = text.trim().toLowerCase()
@@ -48,7 +75,8 @@ function SearchSelect({
   return (
     <div className="position-relative flex-grow-1" ref={boxRef}>
       <input
-        className="form-control"
+        ref={inputRef}
+        className={`form-control${small ? ' form-control-sm' : ''}`}
         value={text}
         placeholder={placeholder}
         required={required && !value}
@@ -66,10 +94,10 @@ function SearchSelect({
           else if (e.key === 'Escape') setOpen(false)
         }}
       />
-      {open && (
+      {open && rect && (
         <div
-          className="list-group position-absolute w-100 shadow-sm mt-1"
-          style={{ zIndex: 1050, maxHeight: 260, overflowY: 'auto' }}
+          className="list-group shadow-sm"
+          style={{ position: 'fixed', top: rect.top, bottom: rect.bottom, left: rect.left, width: rect.width, zIndex: 1060, maxHeight: rect.maxHeight, overflowY: 'auto' }}
         >
           {matches.length === 0 ? (
             <div className="list-group-item text-muted small">No match</div>
@@ -78,7 +106,7 @@ function SearchSelect({
               <button
                 key={o.id}
                 type="button"
-                className={`list-group-item list-group-item-action ${i === active ? 'active' : ''}`}
+                className={`list-group-item list-group-item-action ${small ? 'py-1 small' : ''} ${i === active ? 'active' : ''}`}
                 onMouseDown={e => { e.preventDefault(); choose(o) }}
                 onMouseEnter={() => setActive(i)}
               >

@@ -15,7 +15,7 @@ import PageHeader from '../../components/PageHeader'
 import DataGrid from '../../components/DataGrid'
 import ToastContainer from '../../components/ToastContainer'
 import ConfirmModal from '../../components/ConfirmModal'
-import QuickSelect from '../../components/QuickSelect'
+import QuickSelect, { SearchSelect } from '../../components/QuickSelect'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import { GstRateSelect } from '../../components/GstFields'
 import type { Purchase, Supplier, Material, UserRole, WorkerOption } from '../../types'
@@ -182,6 +182,13 @@ export default function PurchasePage() {
     }))
   }, [materials])
 
+  const materialOptions = useMemo(
+    () => [...materials]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(m => ({ id: m.id, label: `${m.name}${m.colorSpec?.trim() ? ` · ${m.colorSpec.trim()}` : ''} (${m.unit})` })),
+    [materials],
+  )
+
   const removeItem = (index: number) => {
     setItems(prev => prev.filter((_, i) => i !== index))
   }
@@ -335,9 +342,10 @@ export default function PurchasePage() {
           required
           value={item.materialId}
           onChange={id => setMaterial(idx, id)}
-          placeholder="Select material…"
-          options={materials.map(m => ({ id: m.id, label: `${m.name} (${m.unit})` }))}
+          placeholder="Type to search materials…"
+          options={materialOptions}
           onAdd={() => { setMaterialTarget(idx); setQuick('material') }}
+          searchable
         />
       )}
       <div className="mt-2">
@@ -505,10 +513,13 @@ export default function PurchasePage() {
                           </div>
                         ) : (
                           <div className="d-flex gap-1">
-                            <select className="form-select form-select-sm" value={item.materialId} onChange={e => setMaterial(idx, e.target.value)}>
-                              <option value="">Select…</option>
-                              {materials.map(m => <option key={m.id} value={m.id}>{m.name} ({m.unit})</option>)}
-                            </select>
+                            <SearchSelect
+                              small
+                              value={item.materialId}
+                              onChange={id => setMaterial(idx, id)}
+                              placeholder="Type to search materials…"
+                              options={materialOptions}
+                            />
                             <button type="button" className="btn btn-outline-primary btn-sm" onClick={() => { setMaterialTarget(idx); setQuick('material') }}>+</button>
                           </div>
                         )}
