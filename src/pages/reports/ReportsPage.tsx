@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   reportService,
   SalesReportRow,
@@ -37,9 +37,7 @@ import { customerService } from '../../services/customers'
 import { supplierService } from '../../services/suppliers'
 import { usersService } from '../../services/users'
 import { bankService } from '../../services/bank'
-import { occasionService } from '../../services/occasions'
-import { productionService } from '../../services/production'
-import { productService } from '../../services/products'
+import { buildOccasionRows, loadDashboardData, UNASSIGNED_SEASON, type OccasionRow } from '../../services/dashboard'
 
 type TabKey = 'sales' | 'profitability' | 'customers' | 'production' | 'purchases' | 'occasions' | 'bank'
 
@@ -1107,39 +1105,8 @@ function PurchasesTab() {
 }
 
 // ──────────────── Occasions ────────────────
-const UNASSIGNED_SEASON = '__unassigned__'
-const NON_SALE_STATUSES: Order['status'][] = ['DRAFT', 'QUOTED', 'CANCELLED']
-
-interface OccasionTop {
-  name: string
-  qty: number
-  amount: number
-}
-
-interface OccasionRow {
-  key: string
-  name: string
-  year: number | null
-  status: string
-  bills: number
-  purchases: number
-  productionQty: number
-  productionCost: number
-  unitsSold: number
-  revenue: number
-  cogs: number
-  profit: number
-  /** qty = number of bills paid */
-  payers: OccasionTop[]
-  topMaterials: OccasionTop[]
-  topProducts: OccasionTop[]
-}
-
-function topOf(map: Map<string, OccasionTop>, limit = 5): OccasionTop[] {
-  return [...map.values()].sort((a, b) => b.amount - a.amount).slice(0, limit)
-}
-
 function OccasionsTab() {
+  const navigate = useNavigate()
   const { toasts, showToast } = useToast()
   const { role } = useAuth()
   const canSeeSpend = isAdminOrOwner(role)
@@ -1151,107 +1118,8 @@ function OccasionsTab() {
   const generate = async () => {
     setLoading(true)
     try {
-      const [seasons, purchases, purchaseItems, productions, orders, products, materials] = await Promise.all([
-        occasionService.getAllSeasons(),
-        canSeeSpend ? purchaseService.getAll() : Promise.resolve([] as Purchase[]),
-        canSeeSpend ? purchaseService.listItems() : Promise.resolve([] as PurchaseItem[]),
-        productionService.getAll(),
-        orderService.getAll(),
-        productService.getAll(),
-        materialService.getAll(),
-      ])
-      const saleOrders = orders.filter(o => !NON_SALE_STATUSES.includes(o.status))
-      const orderItems = await orderService.getItemsForOrders(saleOrders.map(o => o.id))
-      const productName = Object.fromEntries(products.map(p => [p.id, p.name]))
-      const materialName = Object.fromEntries(materials.map((m: Material) => [m.id, m.name]))
-      const seasonIds = new Set(seasons.map(s => s.id))
-
-      const acc = new Map<string, OccasionRow & { pays: Map<string, OccasionTop>; mats: Map<string, OccasionTop>; prods: Map<string, OccasionTop> }>()
-      const rowFor = (seasonId: string | null | undefined) => {
-        const key = seasonId && seasonIds.has(seasonId) ? seasonId : UNASSIGNED_SEASON
-        let row = acc.get(key)
-        if (!row) {
-          const s = seasons.find(x => x.id === key)
-          row = {
-            key,
-            name: s?.name ?? 'Unassigned',
-            year: s?.year ?? null,
-            status: s?.status ?? '',
-            bills: 0, purchases: 0, productionQty: 0, productionCost: 0,
-            unitsSold: 0, revenue: 0, cogs: 0, profit: 0,
-            payers: [], topMaterials: [], topProducts: [],
-            pays: new Map(), mats: new Map(), prods: new Map(),
-          }
-          acc.set(key, row)
-        }
-        return row
-      }
-      seasons.forEach(s => rowFor(s.id))
-
-      const purchaseSeason = new Map(purchases.map(p => [p.id, p.occasionSeasonId ?? null]))
-      for (const p of purchases) {
-        const row = rowFor(p.occasionSeasonId)
-        const amount = Number(p.grandTotal ?? p.total ?? 0)
-        row.bills += 1
-        row.purchases += amount
-        const payerKey = p.purchasedById || p.purchasedByName || ''
-        const payer = row.pays.get(payerKey) ?? { name: p.purchasedByName || 'Not recorded', qty: 0, amount: 0 }
-        payer.qty += 1
-        payer.amount += amount
-        row.pays.set(payerKey, payer)
-      }
-      for (const item of purchaseItems) {
-        if (item.kind === 'charge' || !item.materialId || !purchaseSeason.has(item.purchaseId)) continue
-        const row = rowFor(purchaseSeason.get(item.purchaseId))
-        const name = materialName[item.materialId] || item.materialId
-        const top = row.mats.get(item.materialId) ?? { name, qty: 0, amount: 0 }
-        top.qty += Number(item.quantity || 0)
-        top.amount += Number(item.total || 0)
-        row.mats.set(item.materialId, top)
-      }
-
-      for (const p of productions) {
-        if (p.status !== 'COMPLETED') continue
-        const row = rowFor(p.occasionSeasonId)
-        row.productionQty += Number(p.actualQuantity ?? p.quantity ?? 0)
-        row.productionCost += Number(p.totalMaterialCost || 0)
-      }
-
-      const seasonByOccasionYear = (occasionId: string | null | undefined, y: number) =>
-        occasionId ? seasons.find(s => s.occasionId === occasionId && s.year === y)?.id ?? null : null
-      for (const o of saleOrders) {
-        const when = (o.eventDate ?? o.orderDate)?.toDate?.() ?? new Date()
-        const fallback = seasonByOccasionYear(o.occasionId, when.getFullYear())
-        for (const item of orderItems[o.id] ?? []) {
-          const row = rowFor(item.occasionSeasonId || fallback)
-          const revenue = Number(item.taxableAmount ?? item.totalPrice ?? 0)
-          row.unitsSold += Number(item.quantity || 0)
-          row.revenue += revenue
-          row.cogs += Number(item.totalCost || 0)
-          row.profit += Number(item.profit ?? revenue - Number(item.totalCost || 0))
-          const name = productName[item.productId] || item.productId
-          const top = row.prods.get(item.productId) ?? { name, qty: 0, amount: 0 }
-          top.qty += Number(item.quantity || 0)
-          top.amount += revenue
-          row.prods.set(item.productId, top)
-        }
-      }
-
-      const statusRank: Record<string, number> = { active: 0, upcoming: 1, closed: 2 }
-      const next = [...acc.values()]
-        .map(({ pays, mats, prods, ...row }) => ({
-          ...row,
-          payers: topOf(pays, Infinity),
-          topMaterials: topOf(mats),
-          topProducts: topOf(prods),
-        }))
-        .filter(r => r.key !== UNASSIGNED_SEASON || r.bills || r.productionQty || r.unitsSold)
-        .sort((a, b) => {
-          if (a.key === UNASSIGNED_SEASON) return 1
-          if (b.key === UNASSIGNED_SEASON) return -1
-          return (b.year ?? 0) - (a.year ?? 0) || (statusRank[a.status] ?? 3) - (statusRank[b.status] ?? 3) || a.name.localeCompare(b.name)
-        })
-      setRows(next)
+      const data = await loadDashboardData({ includeSpend: canSeeSpend })
+      setRows(buildOccasionRows(data))
       setExpanded(null)
     } catch (err) {
       console.error(err)
@@ -1366,7 +1234,11 @@ function OccasionsTab() {
                     const open = expanded === r.key
                     return (
                       <Fragment key={r.key}>
-                        <tr role="button" onClick={() => setExpanded(open ? null : r.key)}>
+                        <tr
+                          role="button"
+                          title={r.key === UNASSIGNED_SEASON ? undefined : `Open ${r.name} dashboard`}
+                          onClick={() => (r.key === UNASSIGNED_SEASON ? setExpanded(open ? null : r.key) : navigate(`/occasions/${r.key}`))}
+                        >
                           <td>
                             <div className="fw-semibold">{r.name}</div>
                             {r.status && <span className={`badge ${r.status === 'active' ? 'text-bg-success' : 'text-bg-secondary'}`}>{r.status}</span>}
@@ -1388,7 +1260,16 @@ function OccasionsTab() {
                               {formatCurrency(r.revenue - r.purchases)}
                             </td>
                           )}
-                          <td className="text-muted small">{open ? '▲' : '▼'}</td>
+                          <td className="small">
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-link text-muted p-0"
+                              aria-label={open ? 'Hide details' : 'Show details'}
+                              onClick={e => { e.stopPropagation(); setExpanded(open ? null : r.key) }}
+                            >
+                              {open ? '▲' : '▼'}
+                            </button>
+                          </td>
                         </tr>
                         {open && (
                           <tr className="table-light">

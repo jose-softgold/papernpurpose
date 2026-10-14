@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Occasion, OccasionKind, OccasionSeason } from '../../types'
 import { occasionService } from '../../services/occasions'
 import { useToast } from '../../hooks/useToast'
@@ -309,7 +310,7 @@ export default function OccasionsManager() {
                       <div className="d-flex flex-wrap gap-1">
                         {seasonsFor(o.id).map(s => (
                           <span key={s.id} className="badge bg-light text-dark border">
-                            {s.name}
+                            <Link to={`/occasions/${s.id}`} className="text-dark" title="Open occasion dashboard">{s.name}</Link>
                             <span className="ms-1 text-muted">({s.status})</span>
                             {canEdit && s.status !== 'closed' && (
                               <button

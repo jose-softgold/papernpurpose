@@ -18,6 +18,7 @@ import OrderList from '../pages/orders/OrderList'
 import OrderDetail from '../pages/orders/OrderDetail'
 import HistoryPage from '../pages/history/HistoryPage'
 import ReportsPage from '../pages/reports/ReportsPage'
+import OccasionDashboard from '../pages/occasions/OccasionDashboard'
 import SettingsPage from '../pages/settings/SettingsPage'
 import AssistantPage from '../pages/assistant/AssistantPage'
 import ImportPage from '../pages/import/ImportPage'
@@ -158,6 +159,14 @@ export default function AppRoutes() {
           element={
             <ReadRoute>
               <HistoryPage />
+            </ReadRoute>
+          }
+        />
+        <Route
+          path="occasions/:seasonId"
+          element={
+            <ReadRoute>
+              <OccasionDashboard />
             </ReadRoute>
           }
         />
