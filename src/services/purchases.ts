@@ -1,16 +1,105 @@
-import { collection, doc, getDoc, getDocs, query, where, orderBy, serverTimestamp, writeBatch, Timestamp, WriteBatch } from 'firebase/firestore'
+import { collection, doc, getDoc, getDocs, query, where, orderBy, serverTimestamp, updateDoc, writeBatch, Timestamp, WriteBatch } from 'firebase/firestore'
 import { db, auth } from '../firebase/config'
-import { Purchase, PurchaseItem } from '../types'
+import { BankTransaction, Purchase, PurchaseItem } from '../types'
 import { lineTax, roundMoney } from '../utils/tax'
 import { createHash } from '../utils/hash'
 import { auditService } from './audit'
 import { inventoryService } from './inventory'
 
-export function purchaseIsPaid(p: Purchase, bankPaid = 0): boolean {
-  if (p.paymentStatus === 'paid') return true
-  if (p.paymentStatus === 'unpaid') return false
-  const total = Number(p.grandTotal ?? p.total ?? 0)
-  return total > 0 && bankPaid + 0.009 >= total
+const PAID_TOLERANCE = 1
+
+export type PurchasePayStatus = 'paid' | 'partial' | 'unpaid'
+
+export interface PurchasePaymentLine {
+  id: string
+  amount: number
+  dateMs: number
+  payerKey: string
+  payerName: string
+  notes: string
+  source: 'manual' | 'bank' | 'cash-close' | 'assumed'
+}
+
+export interface PurchasePaymentSummary {
+  total: number
+  paid: number
+  balance: number
+  status: PurchasePayStatus
+  /** Older bill counted as fully paid by its "Paid by" person */
+  assumed: boolean
+  payments: PurchasePaymentLine[]
+}
+
+export const PAY_STATUS_LABEL: Record<PurchasePayStatus, string> = {
+  paid: 'Paid',
+  partial: 'Partly paid',
+  unpaid: 'Unpaid',
+}
+
+/** Ledger rows grouped by the purchase they pay. */
+export function groupPaymentsByPurchase(txs: BankTransaction[]): Map<string, BankTransaction[]> {
+  const map = new Map<string, BankTransaction[]>()
+  for (const t of txs) {
+    const ids = t.purchaseIds?.length ? t.purchaseIds : (t.purchaseId ? [t.purchaseId] : [])
+    for (const id of new Set(ids)) map.set(id, [...(map.get(id) ?? []), t])
+  }
+  return map
+}
+
+export function summarizePayments(p: Purchase, txs: BankTransaction[] = []): PurchasePaymentSummary {
+  const total = roundMoney(Number(p.grandTotal ?? p.total ?? 0))
+  const billPayerKey = p.purchasedById || p.purchasedByName || ''
+  const billPayerName = p.purchasedByName || 'Not recorded'
+  const payments: PurchasePaymentLine[] = []
+  let cashClose: BankTransaction | null = null
+
+  for (const t of txs) {
+    // One cash close can settle several bills; it closes whatever is left on each.
+    if ((t.purchaseIds?.length ?? 0) > 1) { cashClose = t; continue }
+    payments.push({
+      id: t.id,
+      amount: Number(t.amount || 0),
+      dateMs: t.occurredAt?.toMillis?.() ?? 0,
+      payerKey: t.paidById || t.paidByName || billPayerKey,
+      payerName: t.paidByName || billPayerName,
+      notes: t.rawSubject || '',
+      source: t.source === 'manual' ? 'manual' : 'bank',
+    })
+  }
+
+  let paid = roundMoney(payments.reduce((s, x) => s + x.amount, 0))
+  const settledByClose = cashClose || p.paymentStatus === 'paid'
+  if (settledByClose && paid < total) {
+    payments.push({
+      id: cashClose?.id ?? `${p.id}-settled`,
+      amount: roundMoney(total - paid),
+      dateMs: cashClose?.occurredAt?.toMillis?.() ?? 0,
+      payerKey: cashClose?.paidById || billPayerKey,
+      payerName: cashClose?.paidByName || billPayerName,
+      notes: 'Cash close',
+      source: 'cash-close',
+    })
+    paid = total
+  }
+
+  const assumed = !p.paymentsTracked && payments.length === 0
+  if (assumed) {
+    payments.push({
+      id: `${p.id}-assumed`,
+      amount: total,
+      dateMs: p.purchaseDate?.toMillis?.() ?? 0,
+      payerKey: billPayerKey,
+      payerName: billPayerName,
+      notes: '',
+      source: 'assumed',
+    })
+    paid = total
+  }
+
+  const balance = roundMoney(Math.max(0, total - paid))
+  const status: PurchasePayStatus = balance <= PAID_TOLERANCE ? 'paid' : paid > 0 ? 'partial' : 'unpaid'
+  payments.sort((a, b) => a.dateMs - b.dateMs)
+  return { total, paid, balance: status === 'paid' ? 0 : balance, status, assumed, payments }
 }
 
 export type PurchaseLine = {
@@ -120,6 +209,7 @@ export const purchaseService = {
           }
         : {}),
       paymentStatus: params.paymentStatus === 'paid' ? 'paid' : 'unpaid',
+      paymentsTracked: true,
       createdAt: serverTimestamp(),
     })
 
@@ -275,6 +365,11 @@ export const purchaseService = {
         purchasedByName: params.purchasedByName ?? null,
       },
     })
+  },
+
+  async setPaymentsTracked(id: string, on: boolean): Promise<void> {
+    await updateDoc(doc(db, 'purchases', id), { paymentsTracked: on, updatedAt: serverTimestamp() })
+    await auditService.log({ action: 'purchase.payments_tracked', entityType: 'purchase', entityId: id, after: { paymentsTracked: on } })
   },
 
   async delete(id: string): Promise<void> {

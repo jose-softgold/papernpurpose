@@ -3,11 +3,12 @@ import { Timestamp } from 'firebase/firestore'
 import { Link } from 'react-router-dom'
 import { ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../../firebase/config'
-import { purchaseService, pricePurchase } from '../../services/purchases'
+import { purchaseService, pricePurchase, groupPaymentsByPurchase, summarizePayments, PAY_STATUS_LABEL } from '../../services/purchases'
 import { usersService } from '../../services/users'
 import { supplierService } from '../../services/suppliers'
 import { materialService } from '../../services/materials'
 import { occasionService } from '../../services/occasions'
+import { bankService } from '../../services/bank'
 import { formatCurrency, formatDate } from '../../utils/format'
 import { useToast } from '../../hooks/useToast'
 import LoadingSpinner from '../../components/LoadingSpinner'
@@ -19,7 +20,8 @@ import ConfirmModal from '../../components/ConfirmModal'
 import QuickSelect, { SearchSelect } from '../../components/QuickSelect'
 import EntityQuickCreate from '../../components/EntityQuickCreate'
 import { GstRateSelect } from '../../components/GstFields'
-import type { Purchase, Supplier, Material, OccasionSeason, UserRole, WorkerOption } from '../../types'
+import type { BankTransaction, Purchase, Supplier, Material, OccasionSeason, UserRole, WorkerOption } from '../../types'
+import PurchasePaymentsModal, { PAY_STATUS_BADGE } from '../../components/PurchasePaymentsModal'
 import { useAuth } from '../../hooks/useAuth'
 import { isAdminOrOwner, isWorker as roleIsWorker, ROLE_LABELS } from '../../utils/roles'
 
@@ -66,6 +68,8 @@ export default function PurchasePage() {
   const [notes, setNotes] = useState('')
   const [seasons, setSeasons] = useState<OccasionSeason[]>([])
   const [occasionSeasonId, setOccasionSeasonId] = useState('')
+  const [paidNow, setPaidNow] = useState('')
+  const [paidNowTouched, setPaidNowTouched] = useState(false)
   const [items, setItems] = useState<LineItem[]>([emptyItem()])
   const [billPhotos, setBillPhotos] = useState<File[]>([])
   const [existingBillUrls, setExistingBillUrls] = useState<string[]>([])
@@ -84,6 +88,8 @@ export default function PurchasePage() {
   const [history, setHistory] = useState<Purchase[]>([])
   const [historyLoading, setHistoryLoading] = useState(!isWorker)
   const [supplierMap, setSupplierMap] = useState<Record<string, Supplier>>({})
+  const [paymentsByPurchase, setPaymentsByPurchase] = useState<Map<string, BankTransaction[]>>(new Map())
+  const [payingId, setPayingId] = useState<string | null>(null)
 
   useEffect(() => {
     setItems([emptyItem()])
@@ -111,13 +117,25 @@ export default function PurchasePage() {
       return
     }
     setHistoryLoading(true)
-    purchaseService
-      .getAll()
-      .then(setHistory)
+    Promise.all([
+      purchaseService.getAll(),
+      canManage ? bankService.listPurchasePayments().catch(() => [] as BankTransaction[]) : Promise.resolve([] as BankTransaction[]),
+    ])
+      .then(([purchases, payments]) => {
+        setHistory(purchases)
+        setPaymentsByPurchase(groupPaymentsByPurchase(payments))
+      })
       .finally(() => setHistoryLoading(false))
-  }, [isWorker])
+  }, [isWorker, canManage])
 
   useEffect(() => { loadHistory() }, [loadHistory])
+
+  const payingPurchase = payingId ? history.find(p => p.id === payingId) ?? null : null
+  const refreshPayments = async () => {
+    const [purchases, payments] = await Promise.all([purchaseService.getAll(), bankService.listPurchasePayments()])
+    setHistory(purchases)
+    setPaymentsByPurchase(groupPaymentsByPurchase(payments))
+  }
 
   const updateItem = (index: number, patch: Partial<LineItem>) => {
     setItems(prev => prev.map((item, i) => i === index ? { ...item, ...patch } : item))
@@ -208,6 +226,7 @@ export default function PurchasePage() {
   const { taxLines, taxableSubtotal, gstTotal, chargesTotal, grandTotal } = pricePurchase(
     items.map(i => ({ kind: i.kind, quantity: parseFloat(i.quantity) || 0, unitCost: i.unitCost, gstRate: i.gstRate })),
   )
+  const paidNowAmount = paidNowTouched ? Math.max(0, parseFloat(paidNow) || 0) : grandTotal
   const lineReady = (i: LineItem) =>
     parseFloat(i.quantity) > 0 && (i.kind === 'charge' ? Boolean(i.description.trim()) && i.unitCost > 0 : Boolean(i.materialId))
   const canSubmit = supplierId && purchasedById && items.some(i => i.kind === 'material') && items.every(lineReady)
@@ -220,6 +239,8 @@ export default function PurchasePage() {
     setPurchaseDate(nowStr())
     setNotes('')
     setOccasionSeasonId('')
+    setPaidNow('')
+    setPaidNowTouched(false)
     setItems([emptyItem()])
     setBillPhotos([])
     setExistingBillUrls([])
@@ -325,7 +346,23 @@ export default function PurchasePage() {
         await purchaseService.update(editingId, payload)
         showToast('Purchase updated', 'success')
       } else {
-        await purchaseService.complete(payload)
+        const purchaseId = await purchaseService.complete(payload)
+        const firstPayment = canManage ? Math.min(paidNowAmount, grandTotal) : 0
+        if (firstPayment > 0) {
+          try {
+            await bankService.createManualPurchasePayment({
+              purchaseId,
+              amount: firstPayment,
+              occurredAt: new Date(purchaseDate),
+              supplierName: supplierMap[supplierId]?.name,
+              paidById: purchasedById,
+              paidByName: payload.purchasedByName,
+            })
+          } catch (err) {
+            console.error(err)
+            showToast('Purchase saved, but the payment could not be recorded. Add it from Payments.', 'warning')
+          }
+        }
         showToast('Purchase completed successfully', 'success')
       }
       resetForm()
@@ -608,6 +645,30 @@ export default function PurchasePage() {
             </div>
             <div className="form-text mb-3">Charges such as delivery are part of the bill only. They do not add stock or change any material's cost.</div>
 
+            {canManage && !editingId && (
+              <div className="row g-2 align-items-end mb-3">
+                <div className="col-sm-6 col-lg-3">
+                  <label className="form-label">Paid now (₹)</label>
+                  <input
+                    type="number"
+                    className="form-control"
+                    min={0}
+                    step="0.01"
+                    value={paidNowTouched ? paidNow : String(grandTotal || '')}
+                    onChange={e => { setPaidNowTouched(true); setPaidNow(e.target.value) }}
+                    placeholder="0"
+                  />
+                </div>
+                <div className="col-sm-6 col-lg-9 small text-muted pb-2">
+                  {paidNowAmount >= grandTotal - 1
+                    ? 'Fully paid by the person in "Paid by".'
+                    : paidNowAmount > 0
+                      ? `Part payment. ${formatCurrency(Math.max(0, grandTotal - paidNowAmount))} stays due; add later payments from Purchase History.`
+                      : 'Bought on credit. Record payments later from Purchase History.'}
+                </div>
+              </div>
+            )}
+
             <div className="pc-sticky-submit">
               <button type="submit" className="btn btn-primary w-100 w-lg-auto" disabled={!canSubmit || submitting || loadingEdit}>
                 {submitting ? 'Processing…' : editingId ? 'Save changes' : 'Complete Purchase'}
@@ -665,6 +726,13 @@ export default function PurchasePage() {
                         <th>Paid by</th>
                         <th>Occasion</th>
                         <th>Total (₹)</th>
+                        {canManage && (
+                          <>
+                            <th>Paid</th>
+                            <th>Balance</th>
+                            <th>Payment</th>
+                          </>
+                        )}
                         <th>Charges</th>
                         <th>Materials</th>
                         <th>Total Qty</th>
@@ -676,6 +744,7 @@ export default function PurchasePage() {
                     <tbody>
                       {pageItems.map(p => {
                         const total = Number(p.grandTotal ?? p.total ?? 0)
+                        const pay = canManage ? summarizePayments(p, paymentsByPurchase.get(p.id)) : null
                         return (
                         <tr key={p.id}>
                           <td>{formatDate(p.purchaseDate)}</td>
@@ -683,6 +752,22 @@ export default function PurchasePage() {
                           <td>{p.purchasedByName || '—'}</td>
                           <td>{(p.occasionSeasonId && seasonMap[p.occasionSeasonId]?.name) || '—'}</td>
                           <td>{formatCurrency(total)}</td>
+                          {pay && (
+                            <>
+                              <td>{formatCurrency(pay.paid)}</td>
+                              <td className={pay.balance > 0 ? 'text-danger fw-semibold' : ''}>{pay.balance > 0 ? formatCurrency(pay.balance) : '—'}</td>
+                              <td>
+                                <button
+                                  type="button"
+                                  className={`badge border-0 ${pay.assumed ? 'text-bg-light border' : PAY_STATUS_BADGE[pay.status]}`}
+                                  title="Payments"
+                                  onClick={() => setPayingId(p.id)}
+                                >
+                                  {pay.assumed ? 'Assumed paid' : PAY_STATUS_LABEL[pay.status]}
+                                </button>
+                              </td>
+                            </>
+                          )}
                           <td>
                             {(p.chargesTotal || p.logisticsTotal) ? formatCurrency(Number(p.chargesTotal || 0) + Number(p.logisticsTotal || 0)) : '—'}
                           </td>
@@ -691,6 +776,13 @@ export default function PurchasePage() {
                           <td>
                             {canManage && (
                               <div className="d-flex gap-1">
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline-success"
+                                  onClick={() => setPayingId(p.id)}
+                                >
+                                  Payments
+                                </button>
                                 <button
                                   type="button"
                                   className="btn btn-sm btn-outline-primary"
@@ -737,6 +829,17 @@ export default function PurchasePage() {
             )}
           </div>
         </div>
+      )}
+
+      {payingPurchase && (
+        <PurchasePaymentsModal
+          purchase={payingPurchase}
+          txs={paymentsByPurchase.get(payingPurchase.id) ?? []}
+          supplierName={supplierMap[payingPurchase.supplierId]?.name ?? 'Supplier'}
+          payers={purchaserOptions.map(u => ({ id: u.id, name: u.name }))}
+          onClose={() => setPayingId(null)}
+          onChanged={refreshPayments}
+        />
       )}
 
       <ConfirmModal

@@ -653,6 +653,8 @@ export const bankService = {
     occurredAt: Date
     notes?: string
     supplierName?: string
+    paidById?: string
+    paidByName?: string
   }): Promise<string> {
     const purchaseId = params.purchaseId.trim()
     if (!purchaseId) throw new Error('Purchase is required')
@@ -691,6 +693,8 @@ export const bankService = {
       workerId: null,
       orderId: null,
       purchaseId,
+      paidById: params.paidById || null,
+      paidByName: params.paidByName?.trim() || null,
       materialId: null,
       productId: null,
       paymentKind: null,
@@ -706,6 +710,38 @@ export const bankService = {
 
     await this.rememberCategory('materials')
     return ref.id
+  },
+
+  async updateManualPurchasePayment(id: string, params: {
+    amount: number
+    occurredAt: Date
+    paidById?: string
+    paidByName?: string
+    notes?: string
+  }): Promise<void> {
+    const amount = Math.abs(Number(params.amount))
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0')
+    if (Number.isNaN(params.occurredAt.getTime())) throw new Error('Invalid payment date')
+    await updateDoc(doc(db, 'bankTransactions', id), {
+      amount,
+      occurredAt: Timestamp.fromDate(params.occurredAt),
+      paidById: params.paidById || null,
+      paidByName: params.paidByName?.trim() || null,
+      rawSubject: params.notes?.trim() || '',
+      updatedAt: serverTimestamp(),
+      reviewedBy: actorId(),
+    })
+  },
+
+  /** Every ledger row paying a purchase: manual, tagged bank alerts and cash closes. */
+  async listPurchasePayments(): Promise<BankTransaction[]> {
+    try {
+      const snap = await getDocs(query(collection(db, 'bankTransactions'), where('matchType', '==', 'purchase')))
+      return snap.docs.map(d => normalizeTx(d.id, d.data()))
+    } catch {
+      const all = await this.getAll()
+      return all.filter(t => t.matchType === 'purchase')
+    }
   },
 
   async getKnownTags(): Promise<string[]> {

@@ -313,6 +313,8 @@ export interface Purchase {
   notes: string
   createdAt: Timestamp
   billPhotoUrls?: string[]
+  /** True once payments are recorded as installments; older bills count as fully paid by purchasedBy. */
+  paymentsTracked?: boolean
   /** Occasion season the bill was bought for; null = general stock */
   occasionSeasonId?: string | null
   /** Sum of charge lines (delivery, labour…) including GST; part of grandTotal. */
@@ -455,6 +457,9 @@ export interface BankTransaction {
   purchaseId?: string | null
   /** Set when one cash payment closes several purchases. */
   purchaseIds?: string[]
+  /** Person who paid this purchase installment */
+  paidById?: string | null
+  paidByName?: string | null
   materialId?: string | null
   productId?: string | null
   /** Customer payment against an order */

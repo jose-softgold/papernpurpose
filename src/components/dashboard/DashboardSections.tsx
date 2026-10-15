@@ -17,7 +17,17 @@ export function dayLabel(ms: number): string {
 export function MoneySummary({ money, showSpend }: { money: DashboardMetrics['money']; showSpend: boolean }) {
   const cards = [
     ...(showSpend
-      ? [{ label: 'Purchases', value: formatCurrency(money.purchases), hint: `${money.bills} bill${money.bills === 1 ? '' : 's'}`, icon: '🛒', tone: 'amber' as const }]
+      ? [
+          { label: 'Purchases', value: formatCurrency(money.purchases), hint: `${money.bills} bill${money.bills === 1 ? '' : 's'}`, icon: '🛒', tone: 'amber' as const },
+          {
+            label: 'Due to suppliers',
+            value: formatCurrency(money.due),
+            hint: money.due > 0 ? `${formatCurrency(money.paid)} paid so far` : 'All bills settled',
+            icon: '⏳',
+            tone: 'coral' as const,
+            alert: money.due > 0,
+          },
+        ]
       : []),
     { label: 'Sales (ex GST)', value: formatCurrency(money.revenue), hint: `${money.orders} order${money.orders === 1 ? '' : 's'}`, icon: '💵', tone: 'teal' as const },
     { label: 'Cost of goods', value: formatCurrency(money.cogs), icon: '🧾', tone: 'slate' as const },
@@ -39,7 +49,7 @@ export function MoneySummary({ money, showSpend }: { money: DashboardMetrics['mo
 
 export function WhoPaidCard({ whoPaid }: { whoPaid: DashboardMetrics['whoPaid'] }) {
   return (
-    <SectionCard title="Who paid" icon="👛" flush subtitle="Purchase bills by the person who paid">
+    <SectionCard title="Who paid" icon="👛" flush subtitle="Payments made towards purchase bills, per person">
       {whoPaid.length === 0 ? (
         <EmptyState icon="👛" message="No purchases in this period" />
       ) : (
@@ -119,7 +129,10 @@ export function PurchasesCard({
                   <td>{r.supplier}</td>
                   <td>{r.paidBy || '—'}</td>
                   {showItems ? <td className="small">{r.items || '—'}</td> : <td className="small">{r.occasion || '—'}</td>}
-                  <td className="text-end fw-semibold">{formatCurrency(r.amount)}</td>
+                  <td className="text-end">
+                    <div className="fw-semibold">{formatCurrency(r.amount)}</div>
+                    {r.balance > 0 && <div className="small text-danger">{formatCurrency(r.balance)} due</div>}
+                  </td>
                 </tr>
               ))}
             </tbody>

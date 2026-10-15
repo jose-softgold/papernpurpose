@@ -31,7 +31,7 @@ import ToastContainer from '../../components/ToastContainer'
 import { useAuth } from '../../hooks/useAuth'
 import { isAdminOrOwner } from '../../utils/roles'
 import { orderService } from '../../services/orders'
-import { purchaseIsPaid, purchaseService } from '../../services/purchases'
+import { groupPaymentsByPurchase, purchaseService, summarizePayments, type PurchasePayStatus } from '../../services/purchases'
 import { materialService } from '../../services/materials'
 import { customerService } from '../../services/customers'
 import { supplierService } from '../../services/suppliers'
@@ -876,7 +876,15 @@ interface PurchaseReportLine {
   qty: number
   item: string
   paidBy: string
-  paymentStatus: 'Paid' | 'Not paid'
+  paymentStatus: 'Paid' | 'Partly paid' | 'Not paid'
+  billId: string
+  billBalance: number
+}
+
+const REPORT_PAY_STATUS: Record<PurchasePayStatus, PurchaseReportLine['paymentStatus']> = {
+  paid: 'Paid',
+  partial: 'Partly paid',
+  unpaid: 'Not paid',
 }
 
 function PurchasesTab() {
@@ -885,7 +893,7 @@ function PurchasesTab() {
   const [lines, setLines] = useState<PurchaseReportLine[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [paidBy, setPaidBy] = useState('')
-  const [status, setStatus] = useState<'all' | 'paid' | 'unpaid'>('all')
+  const [status, setStatus] = useState<'all' | 'paid' | 'partial' | 'unpaid'>('all')
 
   const generate = async () => {
     setLoading(true)
@@ -896,13 +904,9 @@ function PurchasesTab() {
         purchaseService.listItems(),
         supplierService.getAll(),
         materialService.getAll(),
-        bankService.getAll({ max: 500 }).catch(() => [] as BankTransaction[]),
+        bankService.listPurchasePayments().catch(() => [] as BankTransaction[]),
       ])
-      const bankPaid: Record<string, number> = {}
-      for (const t of bankRows) {
-        const ids = t.purchaseIds?.length ? t.purchaseIds : (t.purchaseId ? [t.purchaseId] : [])
-        for (const id of ids) bankPaid[id] = (bankPaid[id] ?? 0) + Number(t.amount || 0)
-      }
+      const paymentsByPurchase = groupPaymentsByPurchase(bankRows)
       const supplierMap = Object.fromEntries(suppliers.map(s => [s.id, s.name]))
       const materialMap = Object.fromEntries(materials.map((m: Material) => [m.id, m.name]))
       const itemsByPurchase = new Map<string, PurchaseItem[]>()
@@ -916,14 +920,16 @@ function PurchasesTab() {
         const ms = p.purchaseDate?.toMillis?.() ?? 0
         if (from && ms < from.getTime()) continue
         if (to && ms > to.getTime()) continue
-        const settled = purchaseIsPaid(p, bankPaid[p.id] ?? 0)
-        const statusLabel: PurchaseReportLine['paymentStatus'] = settled ? 'Paid' : 'Not paid'
+        const pay = summarizePayments(p, paymentsByPurchase.get(p.id))
+        const payers = [...new Set(pay.payments.map(x => x.payerName))]
         const base = {
           dateMs: ms,
           dateLabel: formatDate(p.purchaseDate),
           vendor: supplierMap[p.supplierId] || p.supplierId,
-          paidBy: p.purchasedByName || '',
-          paymentStatus: statusLabel,
+          paidBy: payers.length ? payers.join(', ') : p.purchasedByName || '',
+          paymentStatus: REPORT_PAY_STATUS[pay.status],
+          billId: p.id,
+          billBalance: pay.balance,
         }
         const purchaseItems = itemsByPurchase.get(p.id) ?? []
         if (!purchaseItems.length) {
@@ -976,22 +982,23 @@ function PurchasesTab() {
   }
 
   const people = useMemo(
-    () => [...new Set((lines ?? []).map(l => l.paidBy).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    () => [...new Set((lines ?? []).flatMap(l => l.paidBy.split(', ')).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
     [lines],
   )
 
   const filtered = useMemo(() => {
     if (!lines) return []
     return lines.filter(l => {
-      if (paidBy && l.paidBy !== paidBy) return false
+      if (paidBy && !l.paidBy.split(', ').includes(paidBy)) return false
       if (status === 'paid' && l.paymentStatus !== 'Paid') return false
+      if (status === 'partial' && l.paymentStatus !== 'Partly paid') return false
       if (status === 'unpaid' && l.paymentStatus !== 'Not paid') return false
       return true
     })
   }, [lines, paidBy, status])
 
   const amount = filtered.reduce((s, l) => s + l.amountPaid, 0)
-  const openAmount = filtered.filter(l => l.paymentStatus === 'Not paid').reduce((s, l) => s + l.amountPaid, 0)
+  const balanceDue = [...new Map(filtered.map(l => [l.billId, l.billBalance])).values()].reduce((s, b) => s + b, 0)
 
   const exportData: Record<string, unknown>[] = filtered.map(l => ({
     Date: l.dateLabel,
@@ -1003,6 +1010,7 @@ function PurchasesTab() {
     Item: l.item,
     'Paid by': l.paidBy,
     'Payment status': l.paymentStatus,
+    'Bill balance due': l.billBalance,
   }))
 
   return (
@@ -1024,14 +1032,14 @@ function PurchasesTab() {
             </div>
             <div className="col-6 col-md-3">
               <div className="border rounded p-2 h-100">
-                <div className="small text-muted">Amount paid</div>
+                <div className="small text-muted">Purchase amount</div>
                 <div className="fw-semibold">{formatCurrency(amount)}</div>
               </div>
             </div>
             <div className="col-6 col-md-3">
               <div className="border rounded p-2 h-100">
-                <div className="small text-muted">Still open</div>
-                <div className="fw-semibold">{formatCurrency(openAmount)}</div>
+                <div className="small text-muted">Balance due</div>
+                <div className={`fw-semibold ${balanceDue > 0 ? 'text-danger' : ''}`}>{formatCurrency(balanceDue)}</div>
               </div>
             </div>
           </div>
@@ -1048,10 +1056,14 @@ function PurchasesTab() {
               <select
                 className="form-select form-select-sm"
                 value={status}
-                onChange={e => setStatus(e.target.value === 'paid' || e.target.value === 'unpaid' ? e.target.value : 'all')}
+                onChange={e => {
+                  const v = e.target.value
+                  setStatus(v === 'paid' || v === 'partial' || v === 'unpaid' ? v : 'all')
+                }}
               >
                 <option value="all">All</option>
                 <option value="paid">Paid</option>
+                <option value="partial">Partly paid</option>
                 <option value="unpaid">Not paid</option>
               </select>
             </div>
@@ -1087,7 +1099,7 @@ function PurchasesTab() {
                       <td>{l.item || '—'}</td>
                       <td>{l.paidBy || '—'}</td>
                       <td>
-                        <span className={`badge ${l.paymentStatus === 'Paid' ? 'text-bg-success' : 'text-bg-warning'}`}>
+                        <span className={`badge ${l.paymentStatus === 'Paid' ? 'text-bg-success' : l.paymentStatus === 'Partly paid' ? 'text-bg-warning' : 'text-bg-danger'}`}>
                           {l.paymentStatus}
                         </span>
                       </td>

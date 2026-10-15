@@ -1,7 +1,8 @@
 import type {
-  Customer, Material, Occasion, OccasionSeason, Order, OrderItem, OrderStatus, Product, Production, Purchase, PurchaseItem, Supplier,
+  BankTransaction, Customer, Material, Occasion, OccasionSeason, Order, OrderItem, OrderStatus, Product, Production, Purchase, PurchaseItem, Supplier,
 } from '../types'
-import { purchaseService } from './purchases'
+import { groupPaymentsByPurchase, purchaseService, summarizePayments } from './purchases'
+import { bankService } from './bank'
 import { supplierService } from './suppliers'
 import { materialService } from './materials'
 import { inventoryService } from './inventory'
@@ -17,6 +18,7 @@ const CLOSED_ORDER_STATUSES: OrderStatus[] = ['COMPLETED', 'CANCELLED', 'DELIVER
 
 export interface DashboardData {
   purchases: Purchase[]
+  purchasePayments: Map<string, BankTransaction[]>
   purchaseItems: PurchaseItem[]
   suppliers: Supplier[]
   materials: Material[]
@@ -75,11 +77,15 @@ export interface PurchaseRow {
   occasion: string
   items: string
   amount: number
+  balance: number
 }
 
 export interface DashboardMetrics {
   money: {
     purchases: number
+    paid: number
+    /** Balance still owed to suppliers on these bills */
+    due: number
     bills: number
     revenue: number
     cogs: number
@@ -100,8 +106,9 @@ export interface DashboardMetrics {
 }
 
 export async function loadDashboardData(opts: { includeSpend: boolean }): Promise<DashboardData> {
-  const [purchases, purchaseItems, suppliers, materials, materialStocks, productions, orders, products, customers, seasons, occasions] =
+  const [payments, purchases, purchaseItems, suppliers, materials, materialStocks, productions, orders, products, customers, seasons, occasions] =
     await Promise.all([
+      opts.includeSpend ? bankService.listPurchasePayments().catch(() => [] as BankTransaction[]) : Promise.resolve([] as BankTransaction[]),
       opts.includeSpend ? purchaseService.getAll() : Promise.resolve([] as Purchase[]),
       opts.includeSpend ? purchaseService.listItems() : Promise.resolve([] as PurchaseItem[]),
       supplierService.getAll().catch(() => [] as Supplier[]),
@@ -116,7 +123,7 @@ export async function loadDashboardData(opts: { includeSpend: boolean }): Promis
     ])
   const saleIds = orders.filter(o => !NON_SALE_STATUSES.includes(o.status)).map(o => o.id)
   const orderItems = await orderService.getItemsForOrders(saleIds)
-  return { purchases, purchaseItems, suppliers, materials, materialStocks, productions, orders, orderItems, products, customers, seasons, occasions }
+  return { purchases, purchasePayments: groupPaymentsByPurchase(payments), purchaseItems, suppliers, materials, materialStocks, productions, orders, orderItems, products, customers, seasons, occasions }
 }
 
 const ms = (ts?: { toMillis?: () => number } | null) => ts?.toMillis?.() ?? 0
@@ -151,8 +158,29 @@ function bump(map: Map<string, TopEntry>, key: string, name: string, qty: number
 const sortByAmount = (map: Map<string, TopEntry>, limit = Infinity) =>
   [...map.values()].sort((a, b) => b.amount - a.amount).slice(0, limit)
 
-const payerKey = (p: Purchase) => p.purchasedById || p.purchasedByName || ''
-const payerName = (p: Purchase) => p.purchasedByName || 'Not recorded'
+/** Money actually paid per person across these bills; bills assumed paid count for their "Paid by". */
+function payerTotals(data: DashboardData, purchases: Purchase[]) {
+  const map = new Map<string, PayerEntry & { bills: Set<string> }>()
+  let paid = 0
+  let due = 0
+  for (const p of purchases) {
+    const summary = summarizePayments(p, data.purchasePayments.get(p.id))
+    paid += summary.paid
+    due += summary.balance
+    for (const pay of summary.payments) {
+      const entry = map.get(pay.payerKey) ?? { key: pay.payerKey, name: pay.payerName, qty: 0, amount: 0, share: 0, lastBillMs: 0, bills: new Set<string>() }
+      entry.amount += pay.amount
+      entry.bills.add(p.id)
+      entry.qty = entry.bills.size
+      entry.lastBillMs = Math.max(entry.lastBillMs, pay.dateMs)
+      map.set(pay.payerKey, entry)
+    }
+  }
+  const entries = [...map.values()]
+    .map(({ bills: _bills, ...e }) => ({ ...e, share: paid > 0 ? (e.amount / paid) * 100 : 0 }))
+    .sort((a, b) => b.amount - a.amount)
+  return { entries, paid, due }
+}
 
 export function buildOccasionRows(data: DashboardData): OccasionRow[] {
   const season = seasonAttribution(data)
@@ -182,11 +210,16 @@ export function buildOccasionRows(data: DashboardData): OccasionRow[] {
   data.seasons.forEach(s => rowFor(s.id))
 
   const purchaseSeason = new Map(data.purchases.map(p => [p.id, season.purchase(p)]))
+  const billsBySeason = new Map<string, Purchase[]>()
   for (const p of data.purchases) {
     const row = rowFor(season.purchase(p))
     row.bills += 1
     row.purchases += purchaseAmount(p)
-    bump(row.pays, payerKey(p), payerName(p), 1, purchaseAmount(p))
+    billsBySeason.set(row.key, [...(billsBySeason.get(row.key) ?? []), p])
+  }
+  for (const [key, bills] of billsBySeason) {
+    const row = acc.get(key)!
+    for (const e of payerTotals(data, bills).entries) row.pays.set(e.key, e)
   }
   for (const item of data.purchaseItems) {
     if (item.kind === 'charge' || !item.materialId || !purchaseSeason.has(item.purchaseId)) continue
@@ -249,28 +282,19 @@ export function buildMetrics(data: DashboardData, filter: DashboardFilter): Dash
   }
 
   const purchaseTotal = purchases.reduce((s, p) => s + purchaseAmount(p), 0)
-  const pays = new Map<string, PayerEntry>()
-  for (const p of purchases) {
-    const key = payerKey(p)
-    const entry = pays.get(key) ?? { key, name: payerName(p), qty: 0, amount: 0, share: 0, lastBillMs: 0 }
-    entry.qty += 1
-    entry.amount += purchaseAmount(p)
-    entry.lastBillMs = Math.max(entry.lastBillMs, ms(p.purchaseDate))
-    pays.set(key, entry)
-  }
-  const whoPaid = [...pays.values()]
-    .map(e => ({ ...e, share: purchaseTotal > 0 ? (e.amount / purchaseTotal) * 100 : 0 }))
-    .sort((a, b) => b.amount - a.amount)
+  const { entries: whoPaid, paid: purchasesPaid, due: purchasesDue } = payerTotals(data, purchases)
 
   const purchaseRows: PurchaseRow[] = [...purchases]
     .sort((a, b) => ms(b.purchaseDate) - ms(a.purchaseDate))
     .map(p => {
       const items = itemsByPurchase.get(p.id) ?? []
+      const pay = summarizePayments(p, data.purchasePayments.get(p.id))
       return {
         id: p.id,
         dateMs: ms(p.purchaseDate),
         supplier: supplierName[p.supplierId] || p.supplierId,
-        paidBy: p.purchasedByName || '',
+        paidBy: [...new Set(pay.payments.map(x => x.payerName))].join(', ') || p.purchasedByName || '',
+        balance: pay.balance,
         occasion: (p.occasionSeasonId && seasonName[p.occasionSeasonId]) || '',
         items: items
           .map(i => (i.kind === 'charge' ? i.description || 'Charge' : `${materialName[i.materialId] || 'Material'} × ${i.quantity}`))
@@ -380,6 +404,8 @@ export function buildMetrics(data: DashboardData, filter: DashboardFilter): Dash
   return {
     money: {
       purchases: purchaseTotal,
+      paid: purchasesPaid,
+      due: purchasesDue,
       bills: purchases.length,
       revenue,
       cogs,
