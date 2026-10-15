@@ -4,8 +4,9 @@ import type { BankTransaction, Material, Purchase, PurchaseItem } from '../types
 import { purchaseService, groupPaymentsByPurchase, summarizePayments, PAY_STATUS_LABEL } from '../services/purchases'
 import { materialService } from '../services/materials'
 import { bankService } from '../services/bank'
+import { usersService } from '../services/users'
 import { formatCurrency, formatDate } from '../utils/format'
-import { PAY_STATUS_BADGE } from './PurchasePaymentsModal'
+import PurchasePaymentsModal, { PAY_STATUS_BADGE } from './PurchasePaymentsModal'
 
 interface MaterialRow {
   key: string
@@ -21,13 +22,37 @@ interface MaterialRow {
 
 const ms = (p?: Purchase) => p?.purchaseDate?.toMillis?.() ?? 0
 
-export default function SupplierPurchases({ supplierId, showPayments }: { supplierId: string; showPayments: boolean }) {
+export default function SupplierPurchases({
+  supplierId,
+  supplierName,
+  showPayments,
+}: {
+  supplierId: string
+  supplierName: string
+  showPayments: boolean
+}) {
   const [loading, setLoading] = useState(true)
   const [purchases, setPurchases] = useState<Purchase[]>([])
   const [items, setItems] = useState<PurchaseItem[]>([])
   const [materials, setMaterials] = useState<Material[]>([])
   const [payments, setPayments] = useState<Map<string, BankTransaction[]>>(new Map())
   const [view, setView] = useState<'items' | 'bills'>('items')
+  const [dueOnly, setDueOnly] = useState(false)
+  const [payingId, setPayingId] = useState<string | null>(null)
+  const [payers, setPayers] = useState<{ id: string; name: string }[]>([])
+
+  useEffect(() => {
+    if (!showPayments) return
+    usersService.listActive()
+      .then(list => setPayers(list.map(u => ({ id: u.id, name: u.name })).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => setPayers([]))
+  }, [showPayments])
+
+  const refreshPayments = async () => {
+    const [bills, txs] = await Promise.all([purchaseService.getBySupplier(supplierId), bankService.listPurchasePayments()])
+    setPurchases(bills)
+    setPayments(groupPaymentsByPurchase(txs))
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -99,6 +124,9 @@ export default function SupplierPurchases({ supplierId, showPayments }: { suppli
       ? item.description || 'Charge'
       : materials.find(m => m.id === item.materialId)?.name || 'Material'
 
+  const shownBills = dueOnly ? purchases.filter(p => (summaries.get(p.id)?.balance ?? 0) > 0) : purchases
+  const payingPurchase = payingId ? purchases.find(p => p.id === payingId) : undefined
+
   return (
     <div className="card mb-4">
       <div className="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
@@ -136,7 +164,18 @@ export default function SupplierPurchases({ supplierId, showPayments }: { suppli
                 <div className="col-6 col-md-3">
                   <div className="border rounded p-2 h-100">
                     <div className="small text-muted">Balance due</div>
-                    <div className={`fw-semibold${totals.due > 0 ? ' text-danger' : ''}`}>{formatCurrency(totals.due)}</div>
+                    <div className="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                      <div className={`fw-semibold${totals.due > 0 ? ' text-danger' : ''}`}>{formatCurrency(totals.due)}</div>
+                      {totals.due > 0 && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline-danger py-0"
+                          onClick={() => { setView('bills'); setDueOnly(true) }}
+                        >
+                          Record payment
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -149,7 +188,22 @@ export default function SupplierPurchases({ supplierId, showPayments }: { suppli
             </div>
           </div>
 
-          <div className="table-responsive mt-3">
+          {view === 'bills' && showPayments && (
+            <div className="card-body py-2">
+              <div className="form-check form-switch mb-0">
+                <input
+                  className="form-check-input"
+                  type="checkbox"
+                  id="supplier-due-only"
+                  checked={dueOnly}
+                  onChange={e => setDueOnly(e.target.checked)}
+                />
+                <label className="form-check-label small" htmlFor="supplier-due-only">Only bills with a balance due</label>
+              </div>
+            </div>
+          )}
+
+          <div className={`table-responsive${view === 'bills' && showPayments ? '' : ' mt-3'}`}>
             {view === 'items' ? (
               <table className="table table-hover mb-0 align-middle">
                 <thead>
@@ -186,10 +240,16 @@ export default function SupplierPurchases({ supplierId, showPayments }: { suppli
                     <th>Paid by</th>
                     <th className="text-end">Total</th>
                     {showPayments && <th>Payment</th>}
+                    {showPayments && <th />}
                   </tr>
                 </thead>
                 <tbody>
-                  {purchases.map(p => {
+                  {shownBills.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="text-center text-muted py-3">All bills from this supplier are paid.</td>
+                    </tr>
+                  )}
+                  {shownBills.map(p => {
                     const s = summaries.get(p.id)
                     return (
                       <tr key={p.id}>
@@ -213,6 +273,13 @@ export default function SupplierPurchases({ supplierId, showPayments }: { suppli
                             ) : null}
                           </td>
                         )}
+                        {showPayments && (
+                          <td className="text-end">
+                            <button type="button" className="btn btn-sm btn-outline-primary" onClick={() => setPayingId(p.id)}>
+                              {s && s.balance > 0 ? 'Record payment' : 'Payments'}
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     )
                   })}
@@ -221,6 +288,17 @@ export default function SupplierPurchases({ supplierId, showPayments }: { suppli
             )}
           </div>
         </>
+      )}
+
+      {payingPurchase && (
+        <PurchasePaymentsModal
+          purchase={payingPurchase}
+          txs={payments.get(payingPurchase.id) ?? []}
+          supplierName={supplierName}
+          payers={payers}
+          onClose={() => setPayingId(null)}
+          onChanged={refreshPayments}
+        />
       )}
     </div>
   )

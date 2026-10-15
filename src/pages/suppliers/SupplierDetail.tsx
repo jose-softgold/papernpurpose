@@ -341,7 +341,7 @@ export default function SupplierDetail() {
         </div>
       </div>
 
-      {id && !isWorker(role) && <SupplierPurchases supplierId={id} showPayments={isAdminOrOwner(role)} />}
+      {id && !isWorker(role) && <SupplierPurchases supplierId={id} supplierName={displayName(supplier)} showPayments={isAdminOrOwner(role)} />}
 
       {/* Photos */}
       <div className="card mb-4">
