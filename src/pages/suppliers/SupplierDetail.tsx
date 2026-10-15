@@ -10,7 +10,8 @@ import ToastContainer from '../../components/ToastContainer'
 import ConfirmModal from '../../components/ConfirmModal'
 import { formatDate } from '../../utils/format'
 import { useAuth } from '../../hooks/useAuth'
-import { canWriteMaster } from '../../utils/roles'
+import { canWriteMaster, isAdminOrOwner, isWorker } from '../../utils/roles'
+import SupplierPurchases from '../../components/SupplierPurchases'
 
 function resolveMapUrl(link: string): string {
   if (/^-?\d+(\.\d+)?,-?\d+(\.\d+)?$/.test(link.trim())) {
@@ -339,6 +340,8 @@ export default function SupplierDetail() {
           )}
         </div>
       </div>
+
+      {id && !isWorker(role) && <SupplierPurchases supplierId={id} showPayments={isAdminOrOwner(role)} />}
 
       {/* Photos */}
       <div className="card mb-4">

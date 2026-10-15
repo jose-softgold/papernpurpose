@@ -263,6 +263,22 @@ export const purchaseService = {
     return snap.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseItem))
   },
 
+  async getBySupplier(supplierId: string): Promise<Purchase[]> {
+    const snap = await getDocs(query(collection(db, 'purchases'), where('supplierId', '==', supplierId)))
+    return snap.docs
+      .map(d => ({ id: d.id, ...d.data() } as Purchase))
+      .sort((a, b) => (b.purchaseDate?.toMillis?.() ?? 0) - (a.purchaseDate?.toMillis?.() ?? 0))
+  },
+
+  async getItemsForPurchases(purchaseIds: string[]): Promise<PurchaseItem[]> {
+    const chunks: string[][] = []
+    for (let i = 0; i < purchaseIds.length; i += 30) chunks.push(purchaseIds.slice(i, i + 30))
+    const snaps = await Promise.all(
+      chunks.map(ids => getDocs(query(collection(db, 'purchaseItems'), where('purchaseId', 'in', ids)))),
+    )
+    return snaps.flatMap(s => s.docs.map(d => ({ id: d.id, ...d.data() } as PurchaseItem)))
+  },
+
   async getItems(purchaseId: string): Promise<PurchaseItem[]> {
     const snap = await getDocs(
       query(collection(db, 'purchaseItems'), where('purchaseId', '==', purchaseId)),
