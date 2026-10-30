@@ -1,4 +1,4 @@
-type Tone = 'violet' | 'coral' | 'teal' | 'amber' | 'slate'
+type Tone = 'purpose' | 'coral' | 'teal' | 'amber' | 'slate'
 
 interface Props {
   label: string
@@ -9,7 +9,7 @@ interface Props {
   hint?: string
 }
 
-export default function StatCard({ label, value, icon, tone = 'violet', alert, hint }: Props) {
+export default function StatCard({ label, value, icon, tone = 'purpose', alert, hint }: Props) {
   return (
     <div className={`pc-stat${alert ? ' is-alert' : ''}`}>
       {icon && <span className={`pc-stat-icon tone-${tone}`}>{icon}</span>}

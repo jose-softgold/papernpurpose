@@ -51,7 +51,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
       <div className="pc-sidebar-head">
         <div>
           <div className="fw-bold pc-display">Paper&Purpose</div>
-          <div className="small" style={{ color: 'rgba(236,234,246,.55)', fontSize: '.72rem' }}>
+          <div className="small pc-sidebar-muted" style={{ fontSize: '.72rem' }}>
             Workspace
           </div>
         </div>
@@ -65,8 +65,7 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
           Ask the AI
         </NavLink>
         <div
-          className="text-uppercase fw-bold px-3 pt-3 pb-1"
-          style={{ fontSize: '.66rem', letterSpacing: '.08em', color: 'rgba(236,234,246,.4)' }}
+          className="text-uppercase fw-bold px-3 pt-3 pb-1 pc-sidebar-kicker"
         >
           Manage
         </div>
@@ -87,12 +86,12 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
 
       <div className="pc-sidebar-foot">
         {userDoc?.name && (
-          <div className="small fw-semibold text-truncate" style={{ color: '#fff' }}>
+          <div className="small fw-semibold text-truncate pc-sidebar-name">
             {userDoc.name}
           </div>
         )}
         {role && (
-          <div className="small mb-2" style={{ color: 'rgba(236,234,246,.55)', fontSize: '.74rem' }}>
+          <div className="small mb-2 pc-sidebar-muted" style={{ fontSize: '.74rem' }}>
             {ROLE_LABELS[role]}
           </div>
         )}

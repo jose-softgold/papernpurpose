@@ -459,7 +459,7 @@ export default function MaterialList() {
 
       <div className="row g-3 mb-3">
         <div className="col-6 col-lg-4">
-          <StatCard label="Materials tracked" value={materials.length} icon="📦" tone="violet" />
+          <StatCard label="Materials tracked" value={materials.length} icon="📦" tone="purpose" />
         </div>
         <div className="col-6 col-lg-4">
           <StatCard

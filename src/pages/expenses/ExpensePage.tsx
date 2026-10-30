@@ -323,7 +323,7 @@ export default function ExpensePage() {
 
       <div className="row g-2 g-md-3 mb-3">
         <div className="col-6 col-lg-3">
-          <StatCard label="Total budget" value={formatCurrency(activeTotals.totalBudget)} icon="🎯" tone="violet" />
+          <StatCard label="Total budget" value={formatCurrency(activeTotals.totalBudget)} icon="🎯" tone="purpose" />
         </div>
         <div className="col-6 col-lg-3">
           <StatCard

@@ -753,7 +753,7 @@ export default function BankPage() {
               label: 'Personal net',
               value: formatCurrency(dash.totals.personalNet),
               icon: '👤',
-              tone: 'violet' as const,
+              tone: 'purpose' as const,
             },
             {
               kind: 'customer' as const,

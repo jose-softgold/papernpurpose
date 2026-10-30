@@ -478,13 +478,13 @@ export default function OrderDetail() {
           <h6 className="mb-0">Order Timeline</h6>
         </div>
         <div className="card-body py-3">
-          <ul className="list-unstyled mb-0" style={{ borderLeft: '2px solid #dee2e6', paddingLeft: '1.75rem' }}>
+          <ul className="list-unstyled mb-0" style={{ borderLeft: '2px solid var(--pc-border)', paddingLeft: '1.75rem' }}>
             {TIMELINE_STAGES.map(({ status: s, label }, stageIdx) => {
               const reached = order.statusHistory?.[s]
               const isCurrent = order.status === s
               const isPast = reached != null || STATUS_ORDER.indexOf(s) < currentIdx
-              const dotColor = isCurrent ? '#0d6efd' : isPast ? '#198754' : '#dee2e6'
-              const dotBorder = isPast || isCurrent ? 'none' : '2px solid #adb5bd'
+              const dotColor = isCurrent ? 'var(--purpose)' : isPast ? 'var(--sage)' : 'var(--pc-border)'
+              const dotBorder = isPast || isCurrent ? 'none' : '2px solid var(--ink-soft)'
               return (
                 <li
                   key={s}

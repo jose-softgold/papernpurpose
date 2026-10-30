@@ -31,7 +31,7 @@ export function MoneySummary({ money, showSpend }: { money: DashboardMetrics['mo
       : []),
     { label: 'Sales (ex GST)', value: formatCurrency(money.revenue), hint: `${money.orders} order${money.orders === 1 ? '' : 's'}`, icon: '💵', tone: 'teal' as const },
     { label: 'Cost of goods', value: formatCurrency(money.cogs), icon: '🧾', tone: 'slate' as const },
-    { label: 'Gross profit', value: formatCurrency(money.profit), hint: money.revenue > 0 ? `${formatPercent(money.margin)} margin` : undefined, icon: '📈', tone: 'violet' as const },
+    { label: 'Gross profit', value: formatCurrency(money.profit), hint: money.revenue > 0 ? `${formatPercent(money.margin)} margin` : undefined, icon: '📈', tone: 'purpose' as const },
     ...(showSpend
       ? [{ label: 'Net after purchases', value: formatCurrency(money.net), icon: '⚖️', tone: 'coral' as const, alert: money.net < 0 }]
       : []),

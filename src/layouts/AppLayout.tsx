@@ -23,9 +23,8 @@ export default function AppLayout() {
       {drawerOpen && !isAiMode && (
         <>
           <div
-            className="d-lg-none"
+            className="d-lg-none pc-drawer-backdrop"
             onClick={() => setDrawerOpen(false)}
-            style={{ position: 'fixed', inset: 0, background: 'rgba(20,16,44,.55)', zIndex: 1040 }}
           />
           <div
             className="d-lg-none shadow"
