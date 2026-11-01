@@ -388,15 +388,25 @@ export type BankBooks = 'unassigned' | 'business' | 'personal'
 export type BankPaymentKind = 'advance' | 'final'
 /** Business expense kind on a bank row */
 export type BankExpenseKind = 'logistics' | 'recce'
-/** Simplified business tag reasons (Bank Tag modal) */
+/** Simplified business tag reasons (ledger Mark modal) */
 export type BankTagReason =
   | 'customer_payment'
   | 'logistics'
+  | 'salary'
   | 'worker'
   | 'recce'
   | 'purchase'
   | 'other'
   | 'ignore'
+
+/** Coarse ledger mark. Links to an order, worker, or purchase can be added later. */
+export type LedgerMark =
+  | 'salary'
+  | 'customer_payment'
+  | 'purchase'
+  | 'logistics'
+  | 'recce'
+  | 'other'
 
 export const DEFAULT_BANK_TAGS = [
   'materials',
@@ -468,6 +478,8 @@ export interface BankTransaction {
   expenseKind?: BankExpenseKind | null
   /** Worker float/payout subtype when tagged as worker */
   workerPayKind?: 'payout' | 'out' | 'spend' | null
+  /** Coarse mark that stands even when order, worker, or purchase is still unknown */
+  mark?: LedgerMark | null
   tags: string[]
   matchType?: BankMatchType | null
   matchId?: string | null

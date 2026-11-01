@@ -26,6 +26,7 @@ import {
   BankPaymentKind,
   BankExpenseKind,
   BankTagReason,
+  LedgerMark,
   DEFAULT_BANK_TAGS,
   DEFAULT_BANK_CATEGORIES,
   Order,
@@ -59,6 +60,7 @@ function normalizeTx(id: string, data: Record<string, unknown>): BankTransaction
     paymentKind: (data.paymentKind as BankPaymentKind | null) ?? null,
     expenseKind: (data.expenseKind as BankExpenseKind | null) ?? null,
     workerPayKind: (data.workerPayKind as BankTransaction['workerPayKind']) ?? null,
+    mark: (data.mark as LedgerMark | null) ?? null,
     tags: (data.tags as string[]) ?? [],
   }
 }
@@ -130,8 +132,12 @@ export const bankService = {
       books: 'personal',
       personalCategory: cat,
       category: cat,
+      mark: null,
       matchType: null,
       matchId: null,
+      paymentKind: null,
+      expenseKind: null,
+      workerPayKind: null,
       status: 'reviewed',
       updatedAt: serverTimestamp(),
       reviewedBy: actorId(),
@@ -232,6 +238,7 @@ export const bankService = {
   async ignore(id: string): Promise<void> {
     await updateDoc(doc(db, 'bankTransactions', id), {
       status: 'ignored',
+      mark: null,
       matchType: null,
       matchId: null,
       updatedAt: serverTimestamp(),
@@ -271,8 +278,12 @@ export const bankService = {
   async unmatch(id: string): Promise<void> {
     await updateDoc(doc(db, 'bankTransactions', id), {
       status: 'pending',
+      mark: null,
       matchType: null,
       matchId: null,
+      orderId: null,
+      purchaseId: null,
+      workerId: null,
       paymentKind: null,
       expenseKind: null,
       workerPayKind: null,
@@ -282,7 +293,8 @@ export const bankService = {
   },
 
   /**
-   * Unified business tagging (replaces Match + Link for business flows).
+   * Unified business tagging. Order, worker, and purchase links are optional
+   * except worker float, which needs a worker to post the float entry.
    */
   async tagBusiness(id: string, input: TagBusinessInput): Promise<void> {
     const tx = await this.getById(id)
@@ -300,79 +312,102 @@ export const bankService = {
       updatedAt: serverTimestamp(),
       reviewedBy: actorId(),
     }
+    const cleared = {
+      orderId: null,
+      purchaseId: null,
+      workerId: null,
+      paymentKind: null,
+      expenseKind: null,
+      workerPayKind: null,
+      matchType: null,
+      matchId: null,
+    }
 
     if (input.reason === 'customer_payment') {
-      const orderId = input.orderId?.trim()
-      if (!orderId) throw new Error('Order is required for customer payment')
+      const orderId = input.orderId?.trim() || null
       const paymentKind = input.paymentKind || 'advance'
       await updateDoc(doc(db, 'bankTransactions', id), {
         ...base,
-        status: 'matched',
-        matchType: 'order',
+        ...cleared,
+        mark: 'customer_payment' as LedgerMark,
+        status: orderId ? 'matched' : 'reviewed',
+        matchType: orderId ? 'order' : null,
         matchId: orderId,
         orderId,
-        purchaseId: null,
         paymentKind,
-        expenseKind: null,
-        workerPayKind: null,
-        workerId: null,
         category: cat || paymentKind,
       })
       if (cat || paymentKind) await this.rememberCategory(cat || paymentKind)
-      if (input.markOrderCompleted) {
+      if (orderId && input.markOrderCompleted) {
         await orderService.updateStatus(orderId, 'COMPLETED')
       }
       return
     }
 
     if (input.reason === 'logistics') {
-      const orderId = input.orderId?.trim()
-      if (!orderId) throw new Error('Order is required for logistics')
+      const orderId = input.orderId?.trim() || null
       await updateDoc(doc(db, 'bankTransactions', id), {
         ...base,
-        status: 'matched',
-        matchType: 'order',
+        ...cleared,
+        mark: 'logistics' as LedgerMark,
+        status: orderId ? 'matched' : 'reviewed',
+        matchType: orderId ? 'order' : null,
         matchId: orderId,
         orderId,
-        purchaseId: null,
-        paymentKind: null,
         expenseKind: 'logistics',
-        workerPayKind: null,
         category: cat || 'shipping',
       })
       await this.rememberCategory(cat || 'shipping')
 
-      const order = await orderService.getById(orderId)
-      const ship = order?.shipment
-      const company = (input.logisticsCompany || ship?.logisticsCompany || '').trim()
-      const cost =
-        ship?.cost != null && Number(ship.cost) > 0 ? Number(ship.cost) : Number(tx.amount)
-      await orderService.updateShipment(orderId, {
-        logisticsCompany: company,
-        trackingId: ship?.trackingId || '',
-        cost,
-        photoUrls: ship?.photoUrls || [],
-        bankTransactionId: id,
-      })
+      if (orderId) {
+        const order = await orderService.getById(orderId)
+        const ship = order?.shipment
+        const company = (input.logisticsCompany || ship?.logisticsCompany || '').trim()
+        const cost =
+          ship?.cost != null && Number(ship.cost) > 0 ? Number(ship.cost) : Number(tx.amount)
+        await orderService.updateShipment(orderId, {
+          logisticsCompany: company,
+          trackingId: ship?.trackingId || '',
+          cost,
+          photoUrls: ship?.photoUrls || [],
+          bankTransactionId: id,
+        })
+      }
       return
     }
 
     if (input.reason === 'purchase') {
-      const purchaseId = input.purchaseId?.trim()
-      if (!purchaseId) throw new Error('Purchase is required')
+      const purchaseId = input.purchaseId?.trim() || null
       await updateDoc(doc(db, 'bankTransactions', id), {
         ...base,
-        status: 'matched',
-        matchType: 'purchase',
+        ...cleared,
+        mark: 'purchase' as LedgerMark,
+        status: purchaseId ? 'matched' : 'reviewed',
+        matchType: purchaseId ? 'purchase' : null,
         matchId: purchaseId,
         purchaseId,
-        orderId: null,
-        paymentKind: null,
-        expenseKind: null,
-        workerPayKind: null,
         category: cat || 'materials',
       })
-      if (cat) await this.rememberCategory(cat)
+      await this.rememberCategory(cat || 'materials')
+      return
+    }
+
+    if (input.reason === 'salary') {
+      const workerId = input.workerId?.trim() || null
+      const orderId = input.orderId?.trim() || null
+      await updateDoc(doc(db, 'bankTransactions', id), {
+        ...base,
+        ...cleared,
+        mark: 'salary' as LedgerMark,
+        status: orderId ? 'matched' : 'reviewed',
+        matchType: orderId ? 'order' : null,
+        matchId: orderId,
+        orderId,
+        workerId,
+        workerPayKind: 'payout',
+        category: cat || 'salary',
+      })
+      await this.rememberCategory(cat || 'salary')
       return
     }
 
@@ -380,14 +415,11 @@ export const bankService = {
       const workerId = input.workerId?.trim() || null
       await updateDoc(doc(db, 'bankTransactions', id), {
         ...base,
+        ...cleared,
+        mark: 'recce' as LedgerMark,
         status: workerId ? 'matched' : 'reviewed',
-        matchType: null,
-        matchId: null,
-        orderId: null,
-        purchaseId: null,
-        paymentKind: null,
-        expenseKind: 'recce',
         workerId,
+        expenseKind: 'recce',
         workerPayKind: workerId ? 'spend' : null,
         category: cat || 'recce',
       })
@@ -408,28 +440,21 @@ export const bankService = {
 
     if (input.reason === 'worker') {
       const workerId = input.workerId?.trim()
-      if (!workerId) throw new Error('Worker is required')
-      const payKind = input.workerPayKind || 'payout'
+      if (!workerId) throw new Error('Worker is required for float')
+      const payKind = input.workerPayKind === 'spend' ? 'spend' : 'out'
       const orderId = input.orderId?.trim() || null
-      const status =
-        payKind === 'payout' && orderId ? 'matched' : payKind === 'payout' ? 'reviewed' : 'reviewed'
       await updateDoc(doc(db, 'bankTransactions', id), {
         ...base,
-        status: orderId && payKind === 'payout' ? 'matched' : status,
-        matchType: orderId && payKind === 'payout' ? 'order' : null,
-        matchId: orderId && payKind === 'payout' ? orderId : null,
+        ...cleared,
+        mark: null,
+        status: 'reviewed',
         orderId,
-        purchaseId: null,
-        paymentKind: null,
-        expenseKind: null,
         workerId,
         workerPayKind: payKind,
-        category: cat || (payKind === 'payout' ? 'payout' : payKind === 'out' ? 'advance' : 'worker-spend'),
+        category: cat || (payKind === 'out' ? 'advance' : 'worker-spend'),
       })
-      await this.rememberCategory(
-        cat || (payKind === 'payout' ? 'payout' : payKind === 'out' ? 'advance' : 'worker-spend'),
-      )
-      if ((payKind === 'out' || payKind === 'spend') && tx.amount > 0) {
+      await this.rememberCategory(cat || (payKind === 'out' ? 'advance' : 'worker-spend'))
+      if (tx.amount > 0) {
         await advancesService.addEntry({
           workerId,
           workerName: input.workerName || workerId,
@@ -447,19 +472,73 @@ export const bankService = {
     if (input.reason === 'other') {
       await updateDoc(doc(db, 'bankTransactions', id), {
         ...base,
+        ...cleared,
+        mark: 'other' as LedgerMark,
         status: 'reviewed',
-        matchType: null,
-        matchId: null,
-        paymentKind: null,
-        expenseKind: null,
-        workerPayKind: null,
         category: cat || 'other',
       })
-      if (cat) await this.rememberCategory(cat)
+      await this.rememberCategory(cat || 'other')
       return
     }
 
     throw new Error('Unknown tag reason')
+  },
+
+  /** Cash in or out that never arrived as a bank alert. Mark it in the same step or later. */
+  async createCashEntry(params: {
+    amount: number
+    direction: BankDirection
+    occurredAt: Date
+    note?: string
+  }): Promise<string> {
+    const amount = Math.abs(Number(params.amount))
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('Amount must be greater than 0')
+    const occurredAt = params.occurredAt instanceof Date ? params.occurredAt : new Date(params.occurredAt)
+    if (Number.isNaN(occurredAt.getTime())) throw new Error('Invalid date')
+    const direction: BankDirection = params.direction === 'credit' ? 'credit' : 'debit'
+    const note = params.note?.trim() || ''
+    const fingerprint = createHash(
+      ['cash', direction, amount.toFixed(2), occurredAt.toISOString(), String(Date.now())].join('|'),
+    )
+
+    const ref = await addDoc(collection(db, 'bankTransactions'), {
+      gmailMessageId: `manual:${fingerprint}`,
+      gmailThreadId: '',
+      fingerprint,
+      source: 'manual' as BankSource,
+      occurredAt: Timestamp.fromDate(occurredAt),
+      amount,
+      direction,
+      currency: 'INR',
+      bankName: null,
+      accountLast4: null,
+      counterparty: null,
+      description: note ? `Cash · ${note}` : 'Cash',
+      rawSubject: note,
+      snippet: '',
+      parseConfidence: 1,
+      parseNotes: 'Cash recorded on the ledger',
+      status: 'pending',
+      books: 'business',
+      personalCategory: null,
+      category: null,
+      workerId: null,
+      orderId: null,
+      purchaseId: null,
+      materialId: null,
+      productId: null,
+      paymentKind: null,
+      expenseKind: null,
+      workerPayKind: null,
+      mark: null,
+      tags: [],
+      matchType: null,
+      matchId: null,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      reviewedBy: actorId(),
+    })
+    return ref.id
   },
 
   async listByOrderId(orderId: string): Promise<BankTransaction[]> {
@@ -800,15 +879,27 @@ export const bankService = {
     return normalizeBooks(tx)
   },
 
-  /** High-level tag reason for filters / reports */
+  /** High-level tag reason for filters / reports. Salary stays its own kind. */
   reasonKind(
     tx: BankTransaction,
-  ): 'customer' | 'logistics' | 'recce' | 'worker' | 'purchase' | 'other' {
-    if (tx.paymentKind === 'advance' || tx.paymentKind === 'final') return 'customer'
-    if (tx.expenseKind === 'logistics') return 'logistics'
-    if (tx.expenseKind === 'recce') return 'recce'
-    if (tx.workerPayKind || tx.workerId) return 'worker'
-    if (tx.purchaseId || tx.matchType === 'purchase' || (tx.purchaseIds && tx.purchaseIds.length > 0)) return 'purchase'
+  ): 'customer' | 'logistics' | 'recce' | 'salary' | 'worker' | 'purchase' | 'other' {
+    if (tx.mark === 'salary' || tx.workerPayKind === 'payout') return 'salary'
+    if (tx.mark === 'customer_payment' || tx.paymentKind === 'advance' || tx.paymentKind === 'final') {
+      return 'customer'
+    }
+    if (tx.mark === 'logistics' || tx.expenseKind === 'logistics') return 'logistics'
+    if (tx.mark === 'recce' || tx.expenseKind === 'recce') return 'recce'
+    if (
+      tx.mark === 'purchase' ||
+      tx.purchaseId ||
+      tx.matchType === 'purchase' ||
+      (tx.purchaseIds && tx.purchaseIds.length > 0)
+    ) {
+      return 'purchase'
+    }
+    if (tx.workerPayKind === 'out' || tx.workerPayKind === 'spend' || (tx.workerId && tx.mark !== 'other')) {
+      return 'worker'
+    }
     return 'other'
   },
 

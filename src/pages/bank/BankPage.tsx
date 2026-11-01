@@ -38,7 +38,33 @@ import { datePreset } from '../../utils/datePresets'
 type BooksFilter = 'all' | BankBooks
 type DirectionFilter = 'all' | 'credit' | 'debit'
 type StatusFilter = 'all' | BankTxStatus
-type ReasonFilter = 'all' | 'customer' | 'logistics' | 'recce' | 'worker' | 'purchase' | 'other'
+type ReasonFilter = 'all' | 'customer' | 'logistics' | 'recce' | 'salary' | 'worker' | 'purchase' | 'other'
+type CashMark = '' | Exclude<BankTagReason, 'ignore'>
+
+const EVERYDAY_CATEGORIES = ['food', 'tea', 'transport', 'supplies'] as const
+
+function localDateTimeInput(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function emptyCashForm() {
+  return {
+    occurredAt: localDateTimeInput(),
+    amount: '',
+    direction: 'debit' as 'credit' | 'debit',
+    note: '',
+    mark: '' as CashMark,
+    orderId: '',
+    purchaseId: '',
+    workerId: '',
+    paymentKind: 'advance' as BankPaymentKind,
+    workerPayKind: 'out' as 'out' | 'spend',
+    logisticsCompany: '',
+    category: '',
+    customCategory: '',
+    markCompleted: false,
+  }
+}
 
 function readBooksFilter(raw: string | null): BooksFilter {
   if (raw === 'personal' || raw === 'business' || raw === 'unassigned') return raw
@@ -50,6 +76,7 @@ function readReasonFilter(raw: string | null): ReasonFilter {
     raw === 'customer' ||
     raw === 'logistics' ||
     raw === 'recce' ||
+    raw === 'salary' ||
     raw === 'worker' ||
     raw === 'purchase' ||
     raw === 'other'
@@ -103,11 +130,13 @@ export default function BankPage() {
   const [tagPurchaseId, setTagPurchaseId] = useState('')
   const [tagWorkerId, setTagWorkerId] = useState('')
   const [tagPaymentKind, setTagPaymentKind] = useState<BankPaymentKind>('advance')
-  const [tagWorkerPayKind, setTagWorkerPayKind] = useState<'payout' | 'out' | 'spend'>('payout')
+  const [tagWorkerPayKind, setTagWorkerPayKind] = useState<'out' | 'spend'>('out')
   const [tagLogisticsCompany, setTagLogisticsCompany] = useState('')
   const [tagCategory, setTagCategory] = useState('')
   const [tagCustomCategory, setTagCustomCategory] = useState('')
   const [tagMarkCompleted, setTagMarkCompleted] = useState(false)
+  const [cashOpen, setCashOpen] = useState(false)
+  const [cashForm, setCashForm] = useState(emptyCashForm)
 
   const [editTx, setEditTx] = useState<{
     tx: BankTransaction
@@ -205,6 +234,7 @@ export default function BankPage() {
           tx.paymentKind,
           tx.expenseKind,
           tx.workerPayKind,
+          tx.mark,
           tx.workerId ? workerMap[tx.workerId] : null,
           ...(tx.tags ?? []),
         ]
@@ -330,11 +360,13 @@ export default function BankPage() {
   function openTagModal(tx: BankTransaction) {
     const books = bankService.booksOf(tx)
     let defaultReason: BankTagReason = 'other'
-    if (tx.paymentKind) defaultReason = 'customer_payment'
-    else if (tx.expenseKind === 'logistics') defaultReason = 'logistics'
-    else if (tx.expenseKind === 'recce') defaultReason = 'recce'
-    else if (tx.purchaseId || tx.matchType === 'purchase') defaultReason = 'purchase'
-    else if (tx.workerId || tx.workerPayKind) defaultReason = 'worker'
+    if (tx.mark === 'salary' || tx.workerPayKind === 'payout') defaultReason = 'salary'
+    else if (tx.mark === 'customer_payment' || tx.paymentKind) defaultReason = 'customer_payment'
+    else if (tx.mark === 'logistics' || tx.expenseKind === 'logistics') defaultReason = 'logistics'
+    else if (tx.mark === 'recce' || tx.expenseKind === 'recce') defaultReason = 'recce'
+    else if (tx.mark === 'purchase' || tx.purchaseId || tx.matchType === 'purchase') defaultReason = 'purchase'
+    else if (tx.mark === 'other') defaultReason = 'other'
+    else if (tx.workerPayKind === 'out' || tx.workerPayKind === 'spend' || tx.workerId) defaultReason = 'worker'
     else if (books === 'unassigned') defaultReason = 'other'
     else if (tx.direction === 'credit') defaultReason = 'customer_payment'
     else defaultReason = 'other'
@@ -345,7 +377,7 @@ export default function BankPage() {
     setTagPurchaseId(tx.purchaseId || (tx.matchType === 'purchase' ? tx.matchId || '' : ''))
     setTagWorkerId(tx.workerId || '')
     setTagPaymentKind(tx.paymentKind || 'advance')
-    setTagWorkerPayKind(tx.workerPayKind || 'payout')
+    setTagWorkerPayKind(tx.workerPayKind === 'spend' ? 'spend' : 'out')
     setTagLogisticsCompany('')
     setTagCategory(tx.category || tx.personalCategory || '')
     setTagCustomCategory('')
@@ -406,33 +438,17 @@ export default function BankPage() {
     const cat = (tagCustomCategory.trim() || tagCategory).toLowerCase() || null
     const worker = workers.find(w => w.id === tagWorkerId)
 
-    if (tagReason === 'customer_payment' && !tagOrderId) {
-      showToast('Pick an order for customer payment', 'warning')
-      return
-    }
-    if (tagReason === 'logistics' && !tagOrderId) {
-      showToast('Pick an order for logistics', 'warning')
-      return
-    }
-    if (tagReason === 'purchase' && !tagPurchaseId) {
-      showToast('Pick a purchase', 'warning')
-      return
-    }
     if (tagReason === 'worker' && !tagWorkerId) {
-      showToast('Pick a worker', 'warning')
+      showToast('Pick a worker for float', 'warning')
       return
     }
 
-    const expectedStatus =
-      tagReason === 'ignore'
-        ? 'ignored'
-        : tagReason === 'customer_payment' ||
-            tagReason === 'logistics' ||
-            tagReason === 'purchase' ||
-            (tagReason === 'worker' && tagWorkerPayKind === 'payout' && tagOrderId) ||
-            (tagReason === 'recce' && tagWorkerId)
-          ? 'matched'
-          : 'reviewed'
+    const linked =
+      ((tagReason === 'customer_payment' || tagReason === 'logistics' || tagReason === 'salary') &&
+        !!tagOrderId) ||
+      (tagReason === 'purchase' && !!tagPurchaseId) ||
+      (tagReason === 'recce' && !!tagWorkerId)
+    const expectedStatus = tagReason === 'ignore' ? 'ignored' : linked ? 'matched' : 'reviewed'
 
     setTagFor(null)
     clearHidingFilters()
@@ -446,12 +462,70 @@ export default function BankPage() {
           purchaseId: tagPurchaseId || null,
           workerId: tagWorkerId || null,
           workerName: worker?.name,
-          workerPayKind: tagWorkerPayKind,
+          workerPayKind: tagReason === 'worker' ? (tagWorkerPayKind === 'spend' ? 'spend' : 'out') : 'payout',
           logisticsCompany: tagLogisticsCompany,
           category: cat,
-          markOrderCompleted: tagMarkCompleted,
+          markOrderCompleted: tagMarkCompleted && !!tagOrderId,
         }),
-      tagReason === 'ignore' ? 'Ignored' : `Tagged · ${expectedStatus}`,
+      tagReason === 'ignore' ? 'Ignored' : `Marked · ${expectedStatus}`,
+    )
+  }
+
+  function openCashForm() {
+    setCashForm(emptyCashForm())
+    setCashOpen(true)
+  }
+
+  async function saveCash() {
+    if (!canEdit) return
+    const amount = parseFloat(cashForm.amount)
+    const occurredAt = new Date(cashForm.occurredAt)
+    if (!(amount > 0)) {
+      showToast('Enter an amount greater than 0', 'warning')
+      return
+    }
+    if (Number.isNaN(occurredAt.getTime())) {
+      showToast('Enter a valid date', 'warning')
+      return
+    }
+    if (cashForm.mark === 'worker' && !cashForm.workerId) {
+      showToast('Pick a worker for float', 'warning')
+      return
+    }
+    const mark = cashForm.mark
+    const cat = (cashForm.customCategory.trim() || cashForm.category).toLowerCase() || null
+    const worker = workers.find(w => w.id === cashForm.workerId)
+    const linked =
+      ((mark === 'customer_payment' || mark === 'logistics' || mark === 'salary') && !!cashForm.orderId) ||
+      (mark === 'purchase' && !!cashForm.purchaseId) ||
+      (mark === 'recce' && !!cashForm.workerId)
+    setCashOpen(false)
+    clearHidingFilters()
+    await run(
+      'cash',
+      async () => {
+        const id = await bankService.createCashEntry({
+          amount,
+          direction: cashForm.direction,
+          occurredAt,
+          note: cashForm.note,
+        })
+        if (mark) {
+          await bankService.tagBusiness(id, {
+            reason: mark,
+            paymentKind: cashForm.paymentKind,
+            orderId: cashForm.orderId || null,
+            purchaseId: cashForm.purchaseId || null,
+            workerId: cashForm.workerId || null,
+            workerName: worker?.name,
+            workerPayKind: mark === 'worker' ? cashForm.workerPayKind : 'payout',
+            logisticsCompany: cashForm.logisticsCompany,
+            category: cat,
+            markOrderCompleted: cashForm.markCompleted && !!cashForm.orderId,
+          })
+        }
+      },
+      mark ? `Cash recorded · ${linked ? 'matched' : 'marked'}` : 'Cash recorded',
     )
   }
 
@@ -488,9 +562,12 @@ export default function BankPage() {
 
   function tagSummary(tx: BankTransaction) {
     const parts: string[] = []
+    if (tx.mark === 'salary' || tx.workerPayKind === 'payout') parts.push('Salary')
+    else if (tx.mark === 'other') parts.push('Other')
+    else if (tx.mark) parts.push(tx.mark.replace('_', ' '))
     if (tx.paymentKind) parts.push(`Payment: ${tx.paymentKind}`)
     if (tx.expenseKind) parts.push(tx.expenseKind)
-    if (tx.workerPayKind) parts.push(`Worker: ${tx.workerPayKind}`)
+    if (tx.workerPayKind && tx.workerPayKind !== 'payout') parts.push(`Float: ${tx.workerPayKind}`)
     const cat = tx.category || tx.personalCategory
     if (cat) parts.push(cat)
     if (tx.workerId) parts.push(workerMap[tx.workerId] || tx.workerId.slice(0, 6))
@@ -541,12 +618,15 @@ export default function BankPage() {
     <div>
       <ToastContainer toasts={toasts} />
       <PageHeader
-        title="Bank"
-        subtitle="Review synced bank emails — Personal, or Tag business (customer / logistics / worker / recce / purchase)"
+        title="Ledger"
+        subtitle="Bank alerts and cash in one list. Mark a line now — order, worker, or bill can wait."
         icon="🏦"
         actions={
           canEdit ? (
             <div className="d-flex flex-wrap gap-1">
+              <button type="button" className="btn btn-sm btn-primary" onClick={openCashForm}>
+                Record cash
+              </button>
               <Link to="/import?type=worker-spends" className="btn btn-sm btn-outline-secondary">
                 Import
               </Link>
@@ -699,7 +779,8 @@ export default function BankPage() {
             <option value="customer">Customer payment</option>
             <option value="logistics">Logistics</option>
             <option value="recce">Recce</option>
-            <option value="worker">Worker</option>
+            <option value="salary">Salary</option>
+            <option value="worker">Worker float</option>
             <option value="purchase">Purchase</option>
             <option value="other">Other / untagged</option>
           </select>
@@ -859,7 +940,7 @@ export default function BankPage() {
       <p className="small text-muted mb-2">
         <Link to="/expenses">Expense tracker</Link> — personal &amp; business budgets vs spend.
         {' · '}
-        Use <strong>Personal</strong> or <strong>Tag…</strong> below. Connect inbox under{' '}
+        Record cash for money that never hit the bank. Staff meals and similar spends: money out, mark <strong>Other</strong>, category <strong>food</strong> — not Salary and not Purchase. Use <strong>Mark…</strong> on a bank debit the same way. Connect inbox under{' '}
         <Link to="/settings">Settings</Link>.
       </p>
 
@@ -868,8 +949,8 @@ export default function BankPage() {
         resetKey={`${booksFilter}-${directionFilter}-${statusFilter}-${reasonFilter}-${dateFrom}-${dateTo}-${search}`}
         empty={
           <EmptyState
-            message="No bank transactions"
-            description="Connect Gmail in Settings and sync, or loosen filters."
+            message="No ledger lines"
+            description="Record cash, connect Gmail in Settings and sync, or loosen filters."
           />
         }
       >
@@ -914,7 +995,12 @@ export default function BankPage() {
                       </div>
                     </td>
                     <td>
-                      <div className="fw-semibold">{tx.description || tx.rawSubject || '—'}</div>
+                      <div className="fw-semibold">
+                        {tx.description || tx.rawSubject || '—'}{' '}
+                        <span className={`badge ${tx.source === 'manual' ? 'text-bg-warning' : 'text-bg-light border'}`}>
+                          {tx.source === 'manual' ? 'Cash' : 'Bank'}
+                        </span>
+                      </div>
                       <div className="small text-muted">
                         {[tx.bankName, tx.accountLast4 ? `••••${tx.accountLast4}` : null, tx.counterparty]
                           .filter(Boolean)
@@ -1004,7 +1090,7 @@ export default function BankPage() {
                               disabled={busy}
                               onClick={() => openTagModal(tx)}
                             >
-                              Tag…
+                              Mark…
                             </button>
                           )}
                           <button
@@ -1018,14 +1104,19 @@ export default function BankPage() {
                           >
                             Labels
                           </button>
-                          {tx.status === 'matched' && (
+                          {tx.status !== 'ignored' &&
+                            (tx.status === 'matched' ||
+                              tx.mark ||
+                              tx.paymentKind ||
+                              tx.expenseKind ||
+                              tx.workerPayKind) && (
                             <button
                               type="button"
                               className="btn btn-sm btn-outline-secondary"
                               disabled={busy}
-                              onClick={() => void run(tx.id, () => bankService.unmatch(tx.id), 'Cleared tag')}
+                              onClick={() => void run(tx.id, () => bankService.unmatch(tx.id), 'Cleared mark')}
                             >
-                              Untag
+                              Clear mark
                             </button>
                           )}
                           {tx.status !== 'ignored' ? (
@@ -1296,6 +1387,245 @@ export default function BankPage() {
         </>
       )}
 
+      {cashOpen && (
+        <>
+          <div className="modal-backdrop fade show" />
+          <div className="modal d-block" tabIndex={-1}>
+            <div className="modal-dialog modal-lg modal-dialog-scrollable">
+              <div className="modal-content">
+                <div className="modal-header">
+                  <h5 className="modal-title">Record cash</h5>
+                  <button type="button" className="btn-close" onClick={() => setCashOpen(false)} />
+                </div>
+                <div className="modal-body">
+                  <p className="small text-muted">
+                    Use this when the money never arrived as a bank alert. Staff meals: money out, note
+                    “food for employees”, then <strong>Other</strong> and <strong>food</strong>. That is not
+                    salary and not a supplier purchase.
+                  </p>
+                  <div className="row g-2">
+                    <div className="col-md-4">
+                      <label className="form-label">Date</label>
+                      <input
+                        type="datetime-local"
+                        className="form-control"
+                        value={cashForm.occurredAt}
+                        onChange={e => setCashForm(f => ({ ...f, occurredAt: e.target.value }))}
+                      />
+                    </div>
+                    <div className="col-md-4">
+                      <label className="form-label">Amount (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        className="form-control"
+                        value={cashForm.amount}
+                        onChange={e => setCashForm(f => ({ ...f, amount: e.target.value }))}
+                      />
+                    </div>
+                    <div className="col-md-4">
+                      <label className="form-label">Direction</label>
+                      <select
+                        className="form-select"
+                        value={cashForm.direction}
+                        onChange={e =>
+                          setCashForm(f => ({ ...f, direction: e.target.value as 'credit' | 'debit' }))
+                        }
+                      >
+                        <option value="debit">Money out</option>
+                        <option value="credit">Money in</option>
+                      </select>
+                    </div>
+                    <div className="col-12">
+                      <label className="form-label">Note</label>
+                      <input
+                        className="form-control"
+                        placeholder="e.g. food for employees"
+                        value={cashForm.note}
+                        onChange={e => setCashForm(f => ({ ...f, note: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+
+                  <label className="form-label mt-3">Mark</label>
+                  <select
+                    className="form-select mb-2"
+                    value={cashForm.mark}
+                    onChange={e =>
+                      setCashForm(f => ({ ...f, mark: e.target.value as CashMark }))
+                    }
+                  >
+                    <option value="">Mark later</option>
+                    <option value="other">Other everyday spend (food, tea, supplies)</option>
+                    <option value="salary">Salary</option>
+                    <option value="customer_payment">Customer payment</option>
+                    <option value="purchase">Supplier purchase</option>
+                    <option value="logistics">Logistics / courier</option>
+                    <option value="worker">Worker float</option>
+                    <option value="recce">Recce / site visit</option>
+                  </select>
+                  <p className="small text-muted">
+                    Leave the order, worker, or bill blank if you do not know it yet.
+                  </p>
+
+                  <div className="mb-2">
+                    <div className="form-label">Everyday category</div>
+                    <div className="d-flex flex-wrap gap-1 mb-2">
+                      {EVERYDAY_CATEGORIES.map(c => (
+                        <button
+                          key={c}
+                          type="button"
+                          className={`btn btn-sm ${
+                            cashForm.category === c && !cashForm.customCategory.trim()
+                              ? 'btn-primary'
+                              : 'btn-outline-secondary'
+                          }`}
+                          onClick={() =>
+                            setCashForm(f => ({
+                              ...f,
+                              mark: 'other',
+                              category: c,
+                              customCategory: '',
+                            }))
+                          }
+                        >
+                          {c}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="d-flex flex-wrap gap-1 mb-2">
+                      {categories
+                        .filter(c => !EVERYDAY_CATEGORIES.includes(c as (typeof EVERYDAY_CATEGORIES)[number]))
+                        .slice(0, 24)
+                        .map(c => (
+                          <button
+                            key={c}
+                            type="button"
+                            className={`btn btn-sm ${
+                              cashForm.category === c && !cashForm.customCategory.trim()
+                                ? 'btn-primary'
+                                : 'btn-outline-secondary'
+                            }`}
+                            onClick={() =>
+                              setCashForm(f => ({ ...f, category: c, customCategory: '' }))
+                            }
+                          >
+                            {c}
+                          </button>
+                        ))}
+                    </div>
+                    <input
+                      className="form-control"
+                      placeholder="Or a new category"
+                      value={cashForm.customCategory}
+                      onChange={e => setCashForm(f => ({ ...f, customCategory: e.target.value }))}
+                    />
+                  </div>
+
+                  {(cashForm.mark === 'customer_payment' ||
+                    cashForm.mark === 'logistics' ||
+                    cashForm.mark === 'salary') && (
+                    <>
+                      <label className="form-label">
+                        {cashForm.mark === 'salary' ? 'Order (optional)' : 'Order (optional, add later)'}
+                      </label>
+                      <select
+                        className="form-select mb-2"
+                        value={cashForm.orderId}
+                        onChange={e => setCashForm(f => ({ ...f, orderId: e.target.value }))}
+                      >
+                        <option value="">—</option>
+                        {orders
+                          .filter(o => o.status !== 'CANCELLED')
+                          .slice(0, 80)
+                          .map(o => (
+                            <option key={o.id} value={o.id}>
+                              {orderLabel(o)}
+                            </option>
+                          ))}
+                      </select>
+                    </>
+                  )}
+                  {cashForm.mark === 'customer_payment' && (
+                    <select
+                      className="form-select mb-2"
+                      value={cashForm.paymentKind}
+                      onChange={e =>
+                        setCashForm(f => ({ ...f, paymentKind: e.target.value as BankPaymentKind }))
+                      }
+                    >
+                      <option value="advance">Advance / deposit</option>
+                      <option value="final">Final / balance</option>
+                    </select>
+                  )}
+                  {cashForm.mark === 'purchase' && (
+                    <>
+                      <p className="small text-muted">Supplier bill only. Staff meals stay on Other → food.</p>
+                      <label className="form-label">Purchase (optional)</label>
+                      <select
+                        className="form-select mb-2"
+                        value={cashForm.purchaseId}
+                        onChange={e => setCashForm(f => ({ ...f, purchaseId: e.target.value }))}
+                      >
+                        <option value="">—</option>
+                        {purchases.slice(0, 80).map(p => (
+                          <option key={p.id} value={p.id}>
+                            {purchaseLabel(p)}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )}
+                  {(cashForm.mark === 'salary' || cashForm.mark === 'worker' || cashForm.mark === 'recce') && (
+                    <>
+                      <label className="form-label">
+                        Worker {cashForm.mark === 'worker' ? '' : '(optional)'}
+                      </label>
+                      <select
+                        className="form-select mb-2"
+                        value={cashForm.workerId}
+                        onChange={e => setCashForm(f => ({ ...f, workerId: e.target.value }))}
+                      >
+                        <option value="">—</option>
+                        {workers.map(w => (
+                          <option key={w.id} value={w.id}>
+                            {w.name}
+                          </option>
+                        ))}
+                      </select>
+                    </>
+                  )}
+                  {cashForm.mark === 'worker' && (
+                    <select
+                      className="form-select mb-2"
+                      value={cashForm.workerPayKind}
+                      onChange={e =>
+                        setCashForm(f => ({
+                          ...f,
+                          workerPayKind: e.target.value === 'spend' ? 'spend' : 'out',
+                        }))
+                      }
+                    >
+                      <option value="out">Float out (money to worker)</option>
+                      <option value="spend">Float spend</option>
+                    </select>
+                  )}
+                </div>
+                <div className="modal-footer">
+                  <button type="button" className="btn btn-secondary" onClick={() => setCashOpen(false)}>
+                    Cancel
+                  </button>
+                  <button type="button" className="btn btn-primary" onClick={() => void saveCash()}>
+                    Save cash
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       {tagFor && (
         <>
           <div className="modal-backdrop fade show" />
@@ -1303,7 +1633,7 @@ export default function BankPage() {
             <div className="modal-dialog modal-lg">
               <div className="modal-content">
                 <div className="modal-header">
-                  <h5 className="modal-title">Tag business transaction</h5>
+                  <h5 className="modal-title">Mark transaction</h5>
                   <button type="button" className="btn-close" onClick={() => setTagFor(null)} />
                 </div>
                 <div className="modal-body">
@@ -1314,28 +1644,33 @@ export default function BankPage() {
 
                   <label className="form-label">What is this?</label>
                   <select
-                    className="form-select mb-3"
+                    className="form-select mb-2"
                     value={tagReason}
                     onChange={e => setTagReason(e.target.value as BankTagReason)}
                   >
-                    <option value="customer_payment">Customer payment (order required)</option>
-                    <option value="logistics">Logistics / courier (order required)</option>
-                    <option value="worker">Worker pay / float</option>
-                    <option value="recce">Recce / site visit (no order)</option>
-                    <option value="purchase">Purchase payment</option>
-                    <option value="other">Other business</option>
+                    <option value="customer_payment">Customer payment</option>
+                    <option value="logistics">Logistics / courier</option>
+                    <option value="salary">Salary</option>
+                    <option value="worker">Worker float</option>
+                    <option value="recce">Recce / site visit</option>
+                    <option value="purchase">Supplier purchase</option>
+                    <option value="other">Other everyday spend (food, tea, supplies)</option>
                     <option value="ignore">Ignore</option>
                   </select>
+                  <p className="small text-muted">
+                    Food for employees and similar costs: choose <strong>Other</strong>, then <strong>food</strong>.
+                    Do not use Salary or Supplier purchase. Links below are optional.
+                  </p>
 
                   {tagReason === 'customer_payment' && (
                     <>
-                      <label className="form-label">Order</label>
+                      <label className="form-label">Order (optional)</label>
                       <select
                         className="form-select mb-2"
                         value={tagOrderId}
                         onChange={e => setTagOrderId(e.target.value)}
                       >
-                        <option value="">Select order…</option>
+                        <option value="">Add later</option>
                         {orders
                           .filter(o => o.status !== 'CANCELLED')
                           .slice(0, 80)
@@ -1354,30 +1689,32 @@ export default function BankPage() {
                         <option value="advance">Advance / deposit</option>
                         <option value="final">Final / balance</option>
                       </select>
-                      <div className="form-check mb-2">
-                        <input
-                          className="form-check-input"
-                          type="checkbox"
-                          id="tagMarkCompleted"
-                          checked={tagMarkCompleted}
-                          onChange={e => setTagMarkCompleted(e.target.checked)}
-                        />
-                        <label className="form-check-label" htmlFor="tagMarkCompleted">
-                          Mark order COMPLETED
-                        </label>
-                      </div>
+                      {tagOrderId && (
+                        <div className="form-check mb-2">
+                          <input
+                            className="form-check-input"
+                            type="checkbox"
+                            id="tagMarkCompleted"
+                            checked={tagMarkCompleted}
+                            onChange={e => setTagMarkCompleted(e.target.checked)}
+                          />
+                          <label className="form-check-label" htmlFor="tagMarkCompleted">
+                            Mark order COMPLETED
+                          </label>
+                        </div>
+                      )}
                     </>
                   )}
 
                   {tagReason === 'logistics' && (
                     <>
-                      <label className="form-label">Order</label>
+                      <label className="form-label">Order (optional)</label>
                       <select
                         className="form-select mb-2"
                         value={tagOrderId}
                         onChange={e => setTagOrderId(e.target.value)}
                       >
-                        <option value="">Select order…</option>
+                        <option value="">Add later</option>
                         {orders
                           .filter(o => o.status !== 'CANCELLED')
                           .slice(0, 80)
@@ -1397,8 +1734,44 @@ export default function BankPage() {
                     </>
                   )}
 
+                  {tagReason === 'salary' && (
+                    <>
+                      <p className="small text-muted">Pay for a person. Not for staff meals — use Other → food.</p>
+                      <label className="form-label">Worker (optional)</label>
+                      <select
+                        className="form-select mb-2"
+                        value={tagWorkerId}
+                        onChange={e => setTagWorkerId(e.target.value)}
+                      >
+                        <option value="">Add later</option>
+                        {workers.map(w => (
+                          <option key={w.id} value={w.id}>
+                            {w.name}
+                          </option>
+                        ))}
+                      </select>
+                      <label className="form-label">Order (optional)</label>
+                      <select
+                        className="form-select mb-2"
+                        value={tagOrderId}
+                        onChange={e => setTagOrderId(e.target.value)}
+                      >
+                        <option value="">—</option>
+                        {orders
+                          .filter(o => o.status !== 'CANCELLED')
+                          .slice(0, 80)
+                          .map(o => (
+                            <option key={o.id} value={o.id}>
+                              {orderLabel(o)}
+                            </option>
+                          ))}
+                      </select>
+                    </>
+                  )}
+
                   {tagReason === 'worker' && (
                     <>
+                      <p className="small text-muted">Money handed to a worker to spend. A worker is required.</p>
                       <label className="form-label">Worker</label>
                       <select
                         className="form-select mb-2"
@@ -1417,33 +1790,12 @@ export default function BankPage() {
                         className="form-select mb-2"
                         value={tagWorkerPayKind}
                         onChange={e =>
-                          setTagWorkerPayKind(e.target.value as 'payout' | 'out' | 'spend')
+                          setTagWorkerPayKind(e.target.value === 'spend' ? 'spend' : 'out')
                         }
                       >
-                        <option value="payout">Payout / salary</option>
                         <option value="out">Float out (money to worker)</option>
                         <option value="spend">Float spend</option>
                       </select>
-                      {tagWorkerPayKind === 'payout' && (
-                        <>
-                          <label className="form-label">Order (optional)</label>
-                          <select
-                            className="form-select mb-2"
-                            value={tagOrderId}
-                            onChange={e => setTagOrderId(e.target.value)}
-                          >
-                            <option value="">—</option>
-                            {orders
-                              .filter(o => o.status !== 'CANCELLED')
-                              .slice(0, 80)
-                              .map(o => (
-                                <option key={o.id} value={o.id}>
-                                  {orderLabel(o)}
-                                </option>
-                              ))}
-                          </select>
-                        </>
-                      )}
                     </>
                   )}
 
@@ -1468,13 +1820,16 @@ export default function BankPage() {
 
                   {tagReason === 'purchase' && (
                     <>
-                      <label className="form-label">Purchase</label>
+                      <p className="small text-muted">
+                        A supplier bill. Staff meals are not a purchase — use Other and food.
+                      </p>
+                      <label className="form-label">Purchase (optional)</label>
                       <select
                         className="form-select mb-2"
                         value={tagPurchaseId}
                         onChange={e => setTagPurchaseId(e.target.value)}
                       >
-                        <option value="">Select purchase…</option>
+                        <option value="">Add later</option>
                         {purchases.slice(0, 80).map(p => (
                           <option key={p.id} value={p.id}>
                             {purchaseLabel(p)}
@@ -1484,11 +1839,43 @@ export default function BankPage() {
                     </>
                   )}
 
+                  {tagReason === 'other' && (
+                    <div className="mb-2">
+                      <label className="form-label">Everyday category</label>
+                      <div className="d-flex flex-wrap gap-1">
+                        {EVERYDAY_CATEGORIES.map(c => (
+                          <button
+                            key={c}
+                            type="button"
+                            className={`btn btn-sm ${
+                              tagCategory === c && !tagCustomCategory.trim()
+                                ? 'btn-primary'
+                                : 'btn-outline-secondary'
+                            }`}
+                            onClick={() => {
+                              setTagCategory(c)
+                              setTagCustomCategory('')
+                            }}
+                          >
+                            {c}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                   {tagReason !== 'ignore' && (
                     <>
                       <label className="form-label">Category (optional)</label>
                       <div className="d-flex flex-wrap gap-1 mb-2">
-                        {categories.slice(0, 24).map(c => (
+                        {categories
+                          .filter(
+                            c =>
+                              tagReason !== 'other' ||
+                              !EVERYDAY_CATEGORIES.includes(c as (typeof EVERYDAY_CATEGORIES)[number]),
+                          )
+                          .slice(0, 24)
+                          .map(c => (
                           <button
                             key={c}
                             type="button"
@@ -1520,7 +1907,7 @@ export default function BankPage() {
                     Cancel
                   </button>
                   <button type="button" className="btn btn-primary" onClick={saveTag}>
-                    Save tag
+                    Save mark
                   </button>
                 </div>
               </div>

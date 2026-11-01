@@ -85,7 +85,8 @@ export const expenseService = {
       if (bankService.booksOf(tx) !== 'business') continue
       if (tx.status === 'ignored') continue
       if (!inDateRange(tx, from, to)) continue
-      const bucket = bankService.reasonKind(tx)
+      const kind = bankService.reasonKind(tx)
+      const bucket = kind === 'salary' ? 'worker' : kind
       if (!byBucket[bucket]) byBucket[bucket] = { spent: 0, credits: 0 }
       if (tx.direction === 'debit') {
         byBucket[bucket].spent += tx.amount

@@ -504,13 +504,15 @@ function ProductionTab() {
 }
 
 // ──────────────── Bank / Cash ────────────────
-type BankReasonFilter = 'all' | 'customer' | 'logistics' | 'recce' | 'worker' | 'purchase' | 'other'
+type BankReasonFilter = 'all' | 'customer' | 'logistics' | 'recce' | 'salary' | 'worker' | 'purchase' | 'other'
 
 function reasonLabel(tx: BankTransaction): string {
   const parts: string[] = []
   if (tx.paymentKind) parts.push(`payment:${tx.paymentKind}`)
   if (tx.expenseKind) parts.push(tx.expenseKind)
-  if (tx.workerPayKind) parts.push(`worker:${tx.workerPayKind}`)
+  if (tx.mark === 'salary' || tx.workerPayKind === 'payout') parts.push('salary')
+  else if (tx.workerPayKind) parts.push(`worker:${tx.workerPayKind}`)
+  if (tx.mark && tx.mark !== 'salary') parts.push(tx.mark)
   if (tx.category || tx.personalCategory) parts.push(tx.category || tx.personalCategory || '')
   return parts.filter(Boolean).join(' · ') || '—'
 }
@@ -778,7 +780,8 @@ function BankCashTab() {
                 <option value="customer">Customer payment</option>
                 <option value="logistics">Logistics</option>
                 <option value="recce">Recce</option>
-                <option value="worker">Worker</option>
+                <option value="salary">Salary</option>
+                <option value="worker">Worker float</option>
                 <option value="purchase">Purchase</option>
                 <option value="other">Other / untagged</option>
               </select>

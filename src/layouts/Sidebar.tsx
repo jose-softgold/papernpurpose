@@ -12,7 +12,7 @@ const ownerItems = [
   { to: '/production', label: 'Production', icon: '🏭' },
   { to: '/inventory', label: 'Inventory', icon: '🗄️' },
   { to: '/orders', label: 'Orders', icon: '📋' },
-  { to: '/bank', label: 'Bank', icon: '🏦' },
+  { to: '/bank', label: 'Ledger', icon: '🏦' },
   { to: '/expenses', label: 'Expenses', icon: '💰' },
   { to: '/import', label: 'Import', icon: '📥' },
   { to: '/history', label: 'History', icon: '📜' },
